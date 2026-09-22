@@ -17,6 +17,12 @@ type Config struct {
 	// https://clickhouse.com/docs/en/operations/quotas/
 	QuotasPath *string
 
+	// Path to the config enabling the in-process ClickHouse Keeper. It is mounted to
+	// the ../config.d/ directory only for builds that support the embedded Keeper
+	// (see keeperConfigSupported), so coordination-dependent features work:
+	// ReplicatedMergeTree, ON CLUSTER, KeeperMap, system.zookeeper.
+	KeeperConfigPath *string
+
 	GC *GCConfig
 
 	MaxWarmContainers         uint
@@ -76,6 +82,7 @@ var DefaultConfig = Config{
 
 	CustomConfigPath: nil,
 	QuotasPath:       nil,
+	KeeperConfigPath: nil,
 
 	GC: &GCConfig{
 		TriggerFrequency:      5 * time.Minute,

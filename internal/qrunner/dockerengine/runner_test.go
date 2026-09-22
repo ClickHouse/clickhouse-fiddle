@@ -2,10 +2,12 @@ package dockerengine
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/lodthe/clickhouse-playground/internal/buildtype"
 	"github.com/lodthe/clickhouse-playground/internal/dbsettings/runsettings"
 	"github.com/lodthe/clickhouse-playground/internal/dockertag"
 	"github.com/lodthe/clickhouse-playground/internal/queryrun"
@@ -27,6 +29,32 @@ func (t tagStorageMock) Find(version string) (dockertag.Image, bool) {
 	}
 
 	return t.images[version], true
+}
+
+func TestKeeperConfigSupported(t *testing.T) {
+	cases := []struct {
+		buildType buildtype.BuildType
+		version   string
+		expected  bool
+	}{
+		{buildtype.Release, "20", false},
+		{buildtype.Release, "21.8", false},
+		{buildtype.Release, "22.1.3", false},
+		{buildtype.Release, "22.3", true},
+		{buildtype.Release, "22.3-alpine", true},
+		{buildtype.Release, "22.8.1.2097", true},
+		{buildtype.Release, "23", true},
+		{buildtype.Release, "head", true},
+		{buildtype.Release, "latest", true},
+		{buildtype.Debug, "55555", true},
+		{buildtype.TSAN, "head-1a2b3c", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%s-%s", tc.buildType, tc.version), func(t *testing.T) {
+			assert.Equal(t, tc.expected, keeperConfigSupported(tc.buildType, tc.version))
+		})
+	}
 }
 
 func TestCustomSettings(t *testing.T) {

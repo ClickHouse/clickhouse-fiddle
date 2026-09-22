@@ -135,6 +135,7 @@ type DockerEngine struct {
 	DaemonURL        *string         `mapstructure:"daemon_url"`
 	CustomConfigPath *string         `mapstructure:"custom_config_path"`
 	QuotasPath       *string         `mapstructure:"quotas_path"`
+	KeeperConfigPath *string         `mapstructure:"keeper_config_path"`
 	GC               *DockerEngineGC `mapstructure:"gc"`
 	Prewarm          *Prewarm        `mapsctucture:"prewarm"`
 

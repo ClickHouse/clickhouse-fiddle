@@ -1,0 +1,52 @@
+<clickhouse>
+    <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+            <raft_logs_level>warning</raft_logs_level>
+            <!-- Containers are ephemeral: skip fsync of the raft log to speed up replicated DDL. -->
+            <force_sync>false</force_sync>
+            <!-- Single-server quorum: don't wait the default 1-2s election timeout on startup. -->
+            <heart_beat_interval_ms>100</heart_beat_interval_ms>
+            <election_timeout_lower_bound_ms>100</election_timeout_lower_bound_ms>
+            <election_timeout_upper_bound_ms>200</election_timeout_upper_bound_ms>
+        </coordination_settings>
+        <raft_configuration>
+            <server>
+                <id>1</id>
+                <hostname>127.0.0.1</hostname>
+                <port>9234</port>
+            </server>
+        </raft_configuration>
+    </keeper_server>
+
+    <zookeeper>
+        <node>
+            <host>127.0.0.1</host>
+            <port>9181</port>
+        </node>
+    </zookeeper>
+
+    <macros>
+        <shard>s1</shard>
+        <replica>r1</replica>
+        <cluster>default</cluster>
+    </macros>
+
+    <!-- Same as the stock definition in modern versions (hence replace is a no-op there);
+         old versions (< 22.6) do not define the 'default' cluster at all. -->
+    <remote_servers>
+        <default replace="replace">
+            <shard>
+                <replica>
+                    <host>localhost</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </default>
+    </remote_servers>
+
+    <keeper_map_path_prefix>/keeper_map</keeper_map_path_prefix>
+</clickhouse>
