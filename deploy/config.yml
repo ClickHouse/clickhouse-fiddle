@@ -149,6 +149,13 @@ runners:
       # Default: no quotas are set.
       # quotas_path: /quotas.xml
 
+      # [OPTIONAL] Absolute path to the config enabling the in-process ClickHouse Keeper,
+      # so coordination-dependent features (ReplicatedMergeTree, ON CLUSTER, KeeperMap) work.
+      # The config is mounted only for releases since 22.3 and for all non-release builds.
+      # Refer to ./custom-configs/keeper-config.xml for an example.
+      # Default: the in-process Keeper is not enabled.
+      # keeper_config_path: /keeper-config.xml
+
       # You can configure the garbage collector to prune hanged up containers and images.
       # If the field is missed, gc is disabled.
       # Default: gc is disabled.

@@ -201,6 +201,7 @@ func initializeRunners(ctx context.Context, config *Config, tagStorage *dockerta
 			rcfg.DaemonURL = r.DockerEngine.DaemonURL
 			rcfg.CustomConfigPath = r.DockerEngine.CustomConfigPath
 			rcfg.QuotasPath = r.DockerEngine.QuotasPath
+			rcfg.KeeperConfigPath = r.DockerEngine.KeeperConfigPath
 			rcfg.GC = nil
 
 			if config.Settings.DefaultFormat != nil {

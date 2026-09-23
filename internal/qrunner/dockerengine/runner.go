@@ -358,6 +358,14 @@ func (r *Runner) checkIfImageExists(ctx context.Context, state *requestState) bo
 	return false
 }
 
+// keeperConfigSupported reports whether the in-process Keeper config may be mounted:
+// any non-release build (they are all built from modern sources), or releases since 22.3,
+// where ClickHouse Keeper was declared production-ready. Older releases keep the clear
+// 'ZooKeeper is not configured' error instead of connection-timeout noise.
+func keeperConfigSupported(bt buildtype.BuildType, version string) bool {
+	return !bt.IsRelease() || chspec.IsAtLeastMajor(version, "22.3")
+}
+
 // runContainer starts a container and returns its id.
 func (r *Runner) runContainer(ctx context.Context, state *requestState) (err error) {
 	invokedAt := time.Now()
@@ -391,6 +399,16 @@ func (r *Runner) runContainer(ctx context.Context, state *requestState) (err err
 			Type:     mount.TypeBind,
 			Source:   *r.cfg.CustomConfigPath,
 			Target:   fmt.Sprintf("/etc/clickhouse-server/config.d/custom-config%s", path.Ext(*r.cfg.CustomConfigPath)),
+			ReadOnly: true,
+		})
+	}
+
+	// The in-process Keeper is enabled so coordination-dependent features can be tested.
+	if r.cfg.KeeperConfigPath != nil && keeperConfigSupported(state.buildType, state.version) {
+		hostConfig.Mounts = append(hostConfig.Mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   *r.cfg.KeeperConfigPath,
+			Target:   fmt.Sprintf("/etc/clickhouse-server/config.d/keeper-config%s", path.Ext(*r.cfg.KeeperConfigPath)),
 			ReadOnly: true,
 		})
 	}
