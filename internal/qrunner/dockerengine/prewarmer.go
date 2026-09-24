@@ -12,10 +12,9 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const DatabaseInitializationTime = 1 * time.Second
-
 type containerRunner interface {
 	createContainer(ctx context.Context, state *requestState) error
+	waitUntilReady(ctx context.Context, state *requestState) (ready bool, lastOutput string, err error)
 }
 
 // prewarmer predicts which image tags will be requested to start a container
@@ -167,10 +166,14 @@ func (p *prewarmer) runContainer(request *requestState) error {
 		p.ejectContainer()
 	}
 
-	// Pause container after some time to allow its bootstrap.
+	// Pause only after the database is ready
 	go func() {
-		// Sleep is necessary for database server bootstrap to be finished.
-		time.Sleep(DatabaseInitializationTime)
+		ready, _, err := p.runner.waitUntilReady(p.ctx, &state)
+		if err != nil || !ready {
+			p.logger.Warn().Err(err).Str("container_id", container.id).
+				Msg("prewarmed container has not become ready, leaving it unpaused")
+			return
+		}
 
 		release := container.acquireLock()
 		defer release()
@@ -179,8 +182,7 @@ func (p *prewarmer) runContainer(request *requestState) error {
 			return
 		}
 
-		err := p.engine.pauseContainer(p.ctx, container.id)
-		if err != nil {
+		if err = p.engine.pauseContainer(p.ctx, container.id); err != nil {
 			p.logger.Err(err).Str("container_id", container.id).Msg("failed to pause container")
 			return
 		}
