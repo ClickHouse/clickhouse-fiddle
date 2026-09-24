@@ -456,11 +456,6 @@ func (r *Runner) runContainer(ctx context.Context, state *requestState) (err err
 }
 
 func (r *Runner) execQuery(ctx context.Context, state *requestState) (stdout string, stderr string, err error) {
-	invokedAt := time.Now()
-	defer func() {
-		r.pipelineMetr.ExecCommand(err == nil, state.version, invokedAt)
-	}()
-
 	var args []string
 
 	switch state.settings.Type() {
@@ -483,9 +478,81 @@ func (r *Runner) execQuery(ctx context.Context, state *requestState) (stdout str
 		return "", "", errors.Errorf("unknown settings type %s", state.settings.Type())
 	}
 
-	resp, err := r.engine.exec(ctx, state.containerID, args)
+	stdout, stderr, _, err = r.execCommand(ctx, state, args)
+
+	return stdout, stderr, err
+}
+
+func (r *Runner) runQueryWithContainer(ctx context.Context, state *requestState) (output string, err error) {
+	invokedAt := time.Now()
+	defer func() {
+		r.pipelineMetr.RunQuery(err == nil, state.version, invokedAt)
+	}()
+
+	ready, output, err := r.waitUntilReady(ctx, state)
 	if err != nil {
-		return "", "", errors.Wrap(err, "exec failed")
+		return "", err
+	}
+
+	if ready {
+		stdout, stderr, err := r.execQuery(ctx, state)
+		if err != nil {
+			return "", err
+		}
+
+		r.logger.Debug().Str("run_id", state.runID).Msg("query has been executed")
+
+		output = combineOutput(stdout, stderr)
+	}
+
+	// Sanitizer/debug builds print sanitizer reports (data races, use-after-free, UB, ...) to
+	// the server's stderr, which the client never sees. Capture it and forward it to the user.
+	if !state.buildType.IsRelease() {
+		if report := r.collectSanitizerReport(ctx, state); report != "" {
+			if output != "" {
+				output += "\n\n"
+			}
+			output += report
+		}
+	}
+
+	return output, nil
+}
+
+// waitUntilReady waits until ClickHouse successfully responds to the probe query.
+func (r *Runner) waitUntilReady(ctx context.Context, state *requestState) (ready bool, lastOutput string, err error) {
+	deadline := time.NewTimer(r.cfg.ReadyTimeout)
+	defer deadline.Stop()
+
+	for {
+		stdout, stderr, exitCode, err := r.execCommand(ctx, state, []string{"clickhouse", "client", "--query", "SELECT 1"})
+		if err != nil {
+			return false, "", err
+		}
+
+		if exitCode == 0 {
+			return true, "", nil
+		}
+
+		select {
+		case <-deadline.C:
+			r.logger.Warn().Str("run_id", state.runID).Str("stderr", stderr).Msg("database has not become ready in time")
+			return false, combineOutput(stdout, stderr), nil
+		case <-time.NewTimer(r.cfg.ExecRetryDelay).C:
+			continue
+		}
+	}
+}
+
+func (r *Runner) execCommand(ctx context.Context, state *requestState, args []string) (stdout string, stderr string, exitCode int, err error) {
+	invokedAt := time.Now()
+	defer func() {
+		r.pipelineMetr.ExecCommand(err == nil, state.version, invokedAt)
+	}()
+
+	resp, execID, err := r.engine.exec(ctx, state.containerID, args)
+	if err != nil {
+		return "", "", 0, errors.Wrap(err, "exec failed")
 	}
 	defer resp.Close()
 
@@ -501,58 +568,29 @@ func (r *Runner) execQuery(ctx context.Context, state *requestState) (stdout str
 	select {
 	case err := <-outputDone:
 		if err != nil {
-			return "", "", errors.Wrap(err, "failed to get output")
+			return "", "", 0, errors.Wrap(err, "failed to get output")
 		}
 
 	case <-ctx.Done():
-		return "", "", ctx.Err()
+		return "", "", 0, ctx.Err()
+	}
+
+	exitCode, err = r.engine.execExitCode(ctx, execID)
+	if err != nil {
+		return "", "", 0, err
 	}
 
 	r.logger.Debug().Str("run_id", state.runID).Dur("elapsed_ms", time.Since(invokedAt)).Msg("exec finished")
 
-	return outBuf.String(), errBuf.String(), nil
+	return outBuf.String(), errBuf.String(), exitCode, nil
 }
 
-func (r *Runner) runQueryWithContainer(ctx context.Context, state *requestState) (output string, err error) {
-	invokedAt := time.Now()
-	defer func() {
-		r.pipelineMetr.RunQuery(err == nil, state.version, invokedAt)
-	}()
-
-	var stdout string
-	var stderr string
-
-	for retry := 0; retry < r.cfg.MaxExecRetries; retry++ {
-		stdout, stderr, err = r.execQuery(ctx, state)
-		if err != nil {
-			return "", err
-		}
-
-		if chspec.CheckIfClickHouseIsReady(stderr) {
-			r.logger.Debug().Str("run_id", state.runID).Msg("query has been executed")
-			break
-		}
-
-		time.Sleep(r.cfg.ExecRetryDelay)
+func combineOutput(stdout, stderr string) string {
+	if stderr == "" {
+		return stdout
 	}
 
-	output = stdout
-	if stderr != "" {
-		output = stdout + "\n" + stderr
-	}
-
-	// Sanitizer/debug builds print sanitizer reports (data races, use-after-free, UB, ...) to
-	// the server's stderr, which the client never sees. Capture it and forward it to the user.
-	if !state.buildType.IsRelease() {
-		if report := r.collectSanitizerReport(ctx, state); report != "" {
-			if output != "" {
-				output += "\n\n"
-			}
-			output += report
-		}
-	}
-
-	return output, nil
+	return stdout + "\n" + stderr
 }
 
 // collectSanitizerReport reads the container's stderr and returns any sanitizer report found.

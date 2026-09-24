@@ -239,22 +239,32 @@ func (p *engineProvider) unpauseContainer(ctx context.Context, id string) error 
 
 // exec executes the given command in the container and attaches to it.
 // Keep in mind that you have to close the returned response.
-func (p *engineProvider) exec(ctx context.Context, containerID string, cmd []string) (types.HijackedResponse, error) {
+func (p *engineProvider) exec(ctx context.Context, containerID string, cmd []string) (types.HijackedResponse, string, error) {
 	exec, err := p.cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
 		AttachStderr: true,
 		AttachStdout: true,
 		Cmd:          cmd,
 	})
 	if err != nil {
-		return types.HijackedResponse{}, errors.Wrap(err, "exec create failed")
+		return types.HijackedResponse{}, "", errors.Wrap(err, "exec create failed")
 	}
 
 	resp, err := p.cli.ContainerExecAttach(ctx, exec.ID, container.ExecStartOptions{})
 	if err != nil {
-		return types.HijackedResponse{}, errors.Wrap(err, "exec attach failed")
+		return types.HijackedResponse{}, "", errors.Wrap(err, "exec attach failed")
 	}
 
-	return resp, nil
+	return resp, exec.ID, nil
+}
+
+// execExitCode must be called after the exec's output has been fully drained.
+func (p *engineProvider) execExitCode(ctx context.Context, execID string) (int, error) {
+	inspect, err := p.cli.ContainerExecInspect(ctx, execID)
+	if err != nil {
+		return 0, errors.Wrap(err, "exec inspect failed")
+	}
+
+	return inspect.ExitCode, nil
 }
 
 // getContainerStderr returns the container's stderr stream. For non-TTY containers the log
