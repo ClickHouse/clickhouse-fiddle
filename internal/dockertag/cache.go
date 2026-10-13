@@ -2,6 +2,7 @@ package dockertag
 
 import (
 	"context"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -29,7 +30,7 @@ type Cache struct {
 	logger zerolog.Logger
 	cli    RegistryClient
 
-	updating int32
+	updating atomic.Int32
 
 	mu         sync.RWMutex
 	updatedAt  time.Time
@@ -150,7 +151,7 @@ func (c *Cache) updateIfExpired() {
 	}
 
 	// Do nothing if the updating lock has been acquired in another goroutine.
-	if !atomic.CompareAndSwapInt32(&c.updating, 0, 1) {
+	if !c.updating.CompareAndSwap(0, 1) {
 		return
 	}
 
@@ -163,7 +164,7 @@ func (c *Cache) updateIfExpired() {
 func (c *Cache) asyncUpdate() {
 	// Release the acquired lock.
 	defer func() {
-		atomic.StoreInt32(&c.updating, 0)
+		c.updating.Store(0)
 	}()
 
 	_ = c.fetchAndStore()
@@ -209,8 +210,6 @@ func (c *Cache) getImagesFromSeveralRepositories(repositories []string) ([]Image
 	g, _ := errgroup.WithContext(c.ctx)
 	imagesByRepo := make([][]Image, len(repositories))
 	for i := range repositories {
-		i := i
-
 		g.Go(func() error {
 			images, err := c.getImages(repositories[i])
 			if err != nil {
@@ -283,9 +282,7 @@ var tagsToDrop = []string{
 // sortImages orders image list in human-readable order.
 func (c *Cache) sortImages(imgByTag map[string]Image) []Image {
 	copied := make(map[string]Image, len(imgByTag))
-	for k, v := range imgByTag {
-		copied[k] = v
-	}
+	maps.Copy(copied, imgByTag)
 	imgByTag = copied
 
 	// Drop whitelisted tags and remember potential head of the list.

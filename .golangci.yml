@@ -122,6 +122,11 @@ linters:
           - unparam
           - gosec
           - revive
+          - goconst
+      # Repeated string literals are prometheus label names.
+      - path: internal/metrics/
+        linters:
+          - goconst
 
 run:
-  go: "1.24"
+  go: "1.27"

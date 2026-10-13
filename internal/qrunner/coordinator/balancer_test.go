@@ -28,7 +28,7 @@ func TestBalancer_processJob_ConcurrencyLimitExhausted(t *testing.T) {
 
 	const iterations = 1000
 
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		jobsCreated := sync.WaitGroup{}
 		jobsCompleted := sync.WaitGroup{}
 		initFinished, finishInit := context.WithCancel(context.Background())
@@ -38,11 +38,8 @@ func TestBalancer_processJob_ConcurrencyLimitExhausted(t *testing.T) {
 
 		for j := uint32(0); j < *r1.maxConcurrency+*r2.maxConcurrency; j++ {
 			jobsCreated.Add(1)
-			jobsCompleted.Add(1)
 
-			go func() {
-				defer jobsCompleted.Done()
-
+			jobsCompleted.Go(func() {
 				processed := b.processJob(func(r *Runner) {
 					jobsCreated.Done()
 					<-initFinished.Done()
@@ -58,12 +55,12 @@ func TestBalancer_processJob_ConcurrencyLimitExhausted(t *testing.T) {
 				})
 
 				assert.True(t, processed)
-			}()
+			})
 		}
 
 		jobsCreated.Wait()
 
-		for j := 0; j < 10; j++ {
+		for range 10 {
 			processed := b.processJob(func(r *Runner) {})
 			assert.False(t, processed)
 		}
@@ -87,7 +84,7 @@ func TestBalancer_selectRunner_EqualWeights(t *testing.T) {
 	b := newBalancer(zlog.Logger)
 
 	var runners []*Runner
-	for i := 0; i < runnerCount; i++ {
+	for i := range runnerCount {
 		r := NewRunner(stubrunner.New(ctx, fmt.Sprintf("r%d", i), stubrunner.StubRun), 100, nil)
 
 		assert.True(t, b.add(r))
@@ -95,7 +92,7 @@ func TestBalancer_selectRunner_EqualWeights(t *testing.T) {
 	}
 
 	timesSelected := make(map[*Runner]uint, len(runners))
-	for i := 0; i < samples; i++ {
+	for range samples {
 		r := b.selectRunner()
 		timesSelected[r]++
 	}
@@ -120,7 +117,7 @@ func TestBalancer_selectRunner_DifferentWeights(t *testing.T) {
 	b := newBalancer(zlog.Logger)
 
 	// The weight of the i-th runner is (i + 1) * 100.
-	for i := 0; i < runnerCount; i++ {
+	for i := range runnerCount {
 		r := NewRunner(stubrunner.New(ctx, fmt.Sprintf("r%d", i), stubrunner.StubRun), 100*uint(i+1), nil)
 		runners = append(runners, r)
 		assert.True(t, b.add(r))
@@ -128,7 +125,7 @@ func TestBalancer_selectRunner_DifferentWeights(t *testing.T) {
 	}
 
 	timesSelected := make(map[*Runner]uint, len(runners))
-	for i := 0; i < samples; i++ {
+	for range samples {
 		r := b.selectRunner()
 		timesSelected[r]++
 	}

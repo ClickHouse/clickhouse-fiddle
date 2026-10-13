@@ -8,7 +8,7 @@ import (
 )
 
 type Response struct {
-	Result interface{}    `json:"result,omitempty"`
+	Result any            `json:"result,omitempty"`
 	Error  *ErrorResponse `json:"error,omitempty"`
 }
 
@@ -32,7 +32,7 @@ func writeError(w http.ResponseWriter, msg string, code int) {
 	})
 }
 
-func writeResult(w http.ResponseWriter, result interface{}) {
+func writeResult(w http.ResponseWriter, result any) {
 	writeResponse(w, &Response{
 		Result: result,
 	})

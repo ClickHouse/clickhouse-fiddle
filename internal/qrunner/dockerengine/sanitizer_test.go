@@ -51,7 +51,7 @@ func TestExtractSanitizerReportNoMarker(t *testing.T) {
 func TestExtractSanitizerReportCap(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("ERROR: AddressSanitizer: heap-buffer-overflow\n")
-	for i := 0; i < maxSanitizerReportLines*2; i++ {
+	for range maxSanitizerReportLines * 2 {
 		b.WriteString("    #frame line\n")
 	}
 

@@ -65,7 +65,7 @@ func findAMDBuild(results []Result, variant string) (Result, bool) {
 	for _, res := range results {
 		match := amdBuildRe.FindStringSubmatch(res.Name)
 		if match != nil && IsSuccessStatus(res.Status) {
-			for _, token := range strings.Split(match[1], "_") {
+			for token := range strings.SplitSeq(match[1], "_") {
 				if strings.EqualFold(token, variant) {
 					return res, true
 				}

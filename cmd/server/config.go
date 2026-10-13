@@ -11,9 +11,9 @@ import (
 	"github.com/lodthe/clickhouse-playground/internal/qrunner/coordinator"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/go-viper/mapstructure/v2"
 	gconfig "github.com/gookit/config/v2"
 	gyaml "github.com/gookit/config/v2/yaml"
-	"github.com/mitchellh/mapstructure"
 	"github.com/pkg/errors"
 	zlog "github.com/rs/zerolog/log"
 )
