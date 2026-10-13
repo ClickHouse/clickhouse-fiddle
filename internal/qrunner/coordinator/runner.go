@@ -18,7 +18,7 @@ type Runner struct {
 	weight uint
 
 	maxConcurrency *uint32
-	concurrency    int32
+	concurrency    atomic.Int32
 }
 
 func NewRunner(underlying qrunner.Runner, weight uint, maxConcurrency *uint32) *Runner {
@@ -45,5 +45,5 @@ func (r *Runner) setAlive(alive bool) {
 
 // addConcurrency atomically adds delta to the current concurrency and returns the new value.
 func (r *Runner) addConcurrency(delta int32) uint32 {
-	return uint32(atomic.AddInt32(&r.concurrency, delta))
+	return uint32(r.concurrency.Add(delta))
 }

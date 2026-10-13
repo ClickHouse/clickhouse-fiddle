@@ -19,9 +19,9 @@ import (
 	"github.com/lodthe/clickhouse-playground/internal/queryrun"
 	"github.com/lodthe/clickhouse-playground/pkg/chspec"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
-	dockercli "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
@@ -107,23 +107,17 @@ func (r *Runner) Status(ctx context.Context) qrunner.RunnerStatus {
 // 1) gc -- prunes containers and images;
 // 2) status exporter -- exports information about current state of the runner.
 func (r *Runner) Start() error {
-	r.workers.Add(1)
-	go func() {
-		defer r.workers.Done()
+	r.workers.Go(func() {
 		r.gc.start()
-	}()
+	})
 
-	r.workers.Add(1)
-	go func() {
-		defer r.workers.Done()
+	r.workers.Go(func() {
 		r.status.start()
-	}()
+	})
 
-	r.workers.Add(1)
-	go func() {
-		defer r.workers.Done()
+	r.workers.Go(func() {
 		_ = r.prewarmer.Start()
-	}()
+	})
 
 	logCtx := r.logger.Info()
 	if r.cfg.DaemonURL != nil {
@@ -350,7 +344,7 @@ func (r *Runner) checkIfImageExists(ctx context.Context, state *requestState) bo
 
 		return true
 	}
-	if err != nil && !dockercli.IsErrNotFound(err) {
+	if err != nil && !cerrdefs.IsNotFound(err) {
 		r.pipelineMetr.PullExistedImage(false, state.version, startedAt)
 		r.logger.Error().Err(err).Str("image", state.imageFQN).Msg("docker inspect failed")
 	}
@@ -386,11 +380,9 @@ func (r *Runner) runContainer(ctx context.Context, state *requestState) (err err
 	// Network is disabled to prevent malicious attacks and to optimize container start up.
 	hostConfig := &container.HostConfig{
 		NetworkMode: container.NetworkMode(networkMode),
-		Resources: container.Resources{
-			NanoCPUs:   int64(r.cfg.Container.CPULimit),
-			CpusetCpus: r.cfg.Container.CPUSet,
-			Memory:     int64(r.cfg.Container.MemoryLimit),
-		},
+		NanoCPUs:    int64(r.cfg.Container.CPULimit),
+		CpusetCpus:  r.cfg.Container.CPUSet,
+		Memory:      int64(r.cfg.Container.MemoryLimit),
 	}
 
 	// A custom config is used to disable some ClickHouse features to speed up the startup.

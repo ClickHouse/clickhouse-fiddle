@@ -1,7 +1,7 @@
 # Dockerfile was generated from
 # https://github.com/lodthe/dockerfiles/blob/main/go/Dockerfile
 
-FROM golang:1.24.2-alpine3.21 AS builder
+FROM golang:1.27.2-alpine3.24 AS builder
 
 # Setup base software for building an app.
 RUN apk update && \

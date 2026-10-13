@@ -29,7 +29,7 @@ type Coordinator struct {
 	livenessCheckLoops sync.WaitGroup
 
 	logger  zerolog.Logger
-	started int32
+	started atomic.Int32
 
 	runners  []*Runner
 	balancer *balancer
@@ -58,7 +58,7 @@ func (c *Coordinator) Name() string {
 
 // Start starts underlying runners and starts liveness probe processes.
 func (c *Coordinator) Start() error {
-	if !atomic.CompareAndSwapInt32(&c.started, 0, 1) {
+	if !c.started.CompareAndSwap(0, 1) {
 		return errors.New("coordinator has already been started")
 	}
 

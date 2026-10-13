@@ -8,6 +8,7 @@ package buildtype
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -45,10 +46,8 @@ func Parse(raw string) (BuildType, error) {
 	}
 
 	bt := BuildType(strings.ToLower(strings.TrimSpace(raw)))
-	for _, known := range all {
-		if bt == known {
-			return bt, nil
-		}
+	if slices.Contains(all, bt) {
+		return bt, nil
 	}
 
 	return "", fmt.Errorf("unknown build type %q", raw)

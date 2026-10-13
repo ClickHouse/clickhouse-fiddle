@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/docker/cli/cli/connhelper"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
@@ -118,7 +120,7 @@ func (p *engineProvider) addImageTag(ctx context.Context, existingImageTag, newI
 // It blocks until the build finishes and returns an error if the build fails. onLine, if not
 // nil, is called with each non-empty output line so callers can report progress.
 func (p *engineProvider) buildImage(ctx context.Context, buildContext io.Reader, imageTag string, buildArgs map[string]*string, onLine func(string)) error {
-	resp, err := p.buildCli.ImageBuild(ctx, buildContext, types.ImageBuildOptions{
+	resp, err := p.buildCli.ImageBuild(ctx, buildContext, build.ImageBuildOptions{
 		Tags:        []string{imageTag},
 		Dockerfile:  dockerfileName,
 		BuildArgs:   buildArgs,
@@ -197,11 +199,8 @@ func (p *engineProvider) getImages(ctx context.Context, filterChp bool) ([]image
 
 	for i := 0; i < len(images); i++ {
 		var matched bool
-		for _, tag := range images[i].RepoTags {
-			if IsPlaygroundImageName(tag) {
-				matched = true
-				break
-			}
+		if slices.ContainsFunc(images[i].RepoTags, IsPlaygroundImageName) {
+			matched = true
 		}
 
 		// If it's not chp-image, swap if with the last element and pop it in O(1).

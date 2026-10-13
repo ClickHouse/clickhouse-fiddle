@@ -198,7 +198,7 @@ func parseBuildChunk(chunk string) (lines []string, stage string) {
 	chunk = ansiEscapeRe.ReplaceAllString(chunk, "")
 	chunk = strings.ReplaceAll(chunk, "\r", logLineSep)
 
-	for _, line := range strings.Split(chunk, logLineSep) {
+	for line := range strings.SplitSeq(chunk, logLineSep) {
 		line = strings.TrimRight(line, " \t")
 		if strings.TrimSpace(line) == "" {
 			continue
