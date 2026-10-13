@@ -18,6 +18,8 @@ type ErrorResponse struct {
 }
 
 func writeError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
 	if code < 600 { // nolint
 		w.WriteHeader(code)
 	} else {
@@ -39,6 +41,8 @@ func writeResult(w http.ResponseWriter, result any) {
 }
 
 func writeResponse(w http.ResponseWriter, resp *Response) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
 	err := json.NewEncoder(w).Encode(resp)
 	if err != nil {
 		zlog.Error().Err(err).Interface("response", resp).Msg("response encoding failed")

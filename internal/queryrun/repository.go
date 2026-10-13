@@ -36,7 +36,7 @@ func NewRepository(ctx context.Context, client *dynamodb.Client, tableName strin
 }
 
 func (r *Repo) Create(run *Run) error {
-	marshaled, err := attributevalue.MarshalMap(run)
+	marshaled, err := attributevalue.MarshalMap(prepareForStorage(run))
 	if err != nil {
 		return errors.Wrap(err, "marshal failed")
 	}
@@ -80,6 +80,11 @@ func (r *Repo) Get(id string) (*Run, error) {
 
 	if run.ID == "" {
 		return nil, ErrNotFound
+	}
+
+	err = restoreFromStorage(run)
+	if err != nil {
+		return nil, err
 	}
 
 	return run, nil
