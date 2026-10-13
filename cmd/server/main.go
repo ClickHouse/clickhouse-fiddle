@@ -109,18 +109,7 @@ func main() {
 	// Initialize the REST server.
 	runRepo := queryrun.NewRepository(ctx, dynamodbClient, config.AWS.QueryRunsTableName)
 
-	lim := config.Limits
-	router := api.NewRouter(api.RouterOpts{
-		Logger:          logger,
-		Runner:          coord,
-		Preparer:        coord,
-		TagStorage:      tagStorage,
-		RunRepo:         runRepo,
-		Timeout:         config.API.ServerTimeout,
-		CacheDisabled:   config.API.CacheDisabled,
-		MaxQueryLength:  lim.MaxOutputLength,
-		MaxOutputLength: lim.MaxOutputLength,
-	})
+	router := api.NewRouter(newRouterOpts(config, logger, coord, coord, tagStorage, runRepo))
 
 	srv := &http.Server{
 		Addr:              config.API.ListeningAddress,
@@ -170,6 +159,29 @@ func main() {
 	err = srv.Shutdown(shutdownCtx)
 	if err != nil {
 		zlog.Error().Err(err).Msg("server shutdown failed")
+	}
+}
+
+func newRouterOpts(
+	config *Config,
+	logger zerolog.Logger,
+	runner api.QueryRunner,
+	preparer api.ImagePreparer,
+	tagStorage api.TagStorage,
+	runRepo queryrun.Repository,
+) api.RouterOpts {
+	lim := config.Limits
+
+	return api.RouterOpts{
+		Logger:          logger,
+		Runner:          runner,
+		Preparer:        preparer,
+		TagStorage:      tagStorage,
+		RunRepo:         runRepo,
+		Timeout:         config.API.ServerTimeout,
+		CacheDisabled:   config.API.CacheDisabled,
+		MaxQueryLength:  lim.MaxQueryLength,
+		MaxOutputLength: lim.MaxOutputLength,
 	}
 }
 
