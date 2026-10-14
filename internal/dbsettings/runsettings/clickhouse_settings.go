@@ -29,8 +29,21 @@ func (cs *ClickHouseSettings) FormatArgs(version string, defaultOutputFormat str
 
 		result = append(result,
 			"--output_format_pretty_color", "0",
-			"--format", outputFormat)
+			formatFlag(version), outputFormat)
 	}
 
 	return result
+}
+
+// formatFlag returns the clickhouse client flag that sets the output format.
+//
+// Since 26.8 --format maps to the output_format setting, which overrides the FORMAT clause
+// of a query (https://github.com/ClickHouse/ClickHouse/pull/105249). --default_format is
+// only a fallback, so the FORMAT clause keeps working. Older versions don't know this flag.
+func formatFlag(version string) string {
+	if chspec.IsAtLeastMajor(version, "26.8") {
+		return "--default_format"
+	}
+
+	return "--format"
 }
