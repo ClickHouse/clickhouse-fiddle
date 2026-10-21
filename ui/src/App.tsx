@@ -14,7 +14,7 @@ import Header from './components/Header';
 import EditorPanel from './components/EditorPanel';
 import outputFormats from './data/outputFormats'; // Import the formats
 
-const defaultInput = `CREATE TABLE users (uid Int16, name String, age Int16) ENGINE=Memory;
+const defaultInput = `CREATE TABLE users (uid Int16, name String, age Int16) ENGINE=MergeTree ORDER BY uid;
 
 INSERT INTO users VALUES (1231, 'John', 33);
 INSERT INTO users VALUES (6666, 'Ksenia', 48);
