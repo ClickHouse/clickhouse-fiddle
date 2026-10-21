@@ -77,6 +77,11 @@ func TestCustomSettings(t *testing.T) {
 				Tag:        "21",
 				Digest:     "sha256:c03c136ca0e87f9b821718f05dc45dea413946ff650ad15980ea89d1c34c87d3",
 			},
+			// Moving tag: keeps readiness detection exercised against current clickhouse-client output.
+			"latest": {
+				Repository: "clickhouse/clickhouse-server",
+				Tag:        "latest",
+			},
 		},
 	}
 
@@ -107,6 +112,13 @@ func TestCustomSettings(t *testing.T) {
 			query:          "SELECT 1",
 			expectedOutput: "1\n",
 			runSettings:    &runsettings.ClickHouseSettings{OutputFormat: "PrettyCompactMonoBlock"},
+		},
+		{
+			database:       "clickhouse",
+			version:        "latest",
+			query:          "SELECT 1",
+			expectedOutput: "1\n",
+			runSettings:    &runsettings.ClickHouseSettings{},
 		},
 	}
 

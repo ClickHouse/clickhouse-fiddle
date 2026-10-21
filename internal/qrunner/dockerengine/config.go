@@ -6,7 +6,7 @@ type Config struct {
 	DaemonURL *string
 
 	ExecRetryDelay time.Duration
-	MaxExecRetries int
+	ReadyTimeout   time.Duration
 
 	DefaultOutputFormat string
 
@@ -76,7 +76,7 @@ var defaultImageBufferSize = uint(30)
 
 var DefaultConfig = Config{
 	ExecRetryDelay: 200 * time.Millisecond,
-	MaxExecRetries: 20,
+	ReadyTimeout:   30 * time.Second,
 
 	DefaultOutputFormat: "TabSeparated",
 
