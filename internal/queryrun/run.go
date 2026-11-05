@@ -20,6 +20,11 @@ type Run struct {
 	Output    string `dynamodbav:"Output"`
 	RawOutput []byte `dynamodbav:"RawOutput,omitempty"`
 
+	// Gzipped replacements of Output/RawOutput, set when the plain values would not
+	// fit the DynamoDB item size limit. See prepareForStorage.
+	OutputGz    []byte `dynamodbav:"OutputGz,omitempty"`
+	RawOutputGz []byte `dynamodbav:"RawOutputGz,omitempty"`
+
 	Database string                  `dynamodbav:"Database"`
 	Settings runsettings.RunSettings `dynamodbav:"Settings"`
 

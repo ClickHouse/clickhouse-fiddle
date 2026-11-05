@@ -1,6 +1,7 @@
 package restapi
 
 import (
+	"compress/flate"
 	"fmt"
 	"net/http"
 	"strings"
@@ -40,6 +41,7 @@ func NewRouter(opts RouterOpts) http.Handler {
 		NoColor: true,
 	}))
 	r.Use(middleware.Recoverer)
+	r.Use(middleware.Compress(flate.DefaultCompression, "application/json"))
 
 	r.Use(middleware.Timeout(opts.Timeout))
 	if opts.CacheDisabled {
