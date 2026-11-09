@@ -36,6 +36,11 @@ func prepareForStorage(run *Run) *Run {
 	output := run.Output
 	rawOutput := run.RawOutput
 
+	// A byte-identical RawOutput is not stored: readers fall back to Output bytes.
+	if bytes.Equal([]byte(output), rawOutput) {
+		rawOutput = nil
+	}
+
 	outputGz := gzipBytes([]byte(output))
 	rawOutputGz := gzipBytes(rawOutput)
 

@@ -42,17 +42,33 @@ func TestPrepareForStorageCompressesLargeOutput(t *testing.T) {
 	require.NotSame(t, run, stored)
 	require.Empty(t, stored.Output)
 	require.Empty(t, stored.RawOutput)
-	require.LessOrEqual(t, len(stored.OutputGz)+len(stored.RawOutputGz), storedOutputBudget)
+	// The byte-identical RawOutput is deduplicated instead of being compressed twice.
+	require.Empty(t, stored.RawOutputGz)
+	require.LessOrEqual(t, len(stored.OutputGz), storedOutputBudget)
 
 	require.NoError(t, restoreFromStorage(stored))
 	require.Equal(t, output, stored.Output)
-	require.Equal(t, []byte(output), stored.RawOutput)
+	require.Empty(t, stored.RawOutput)
 	require.Empty(t, stored.OutputGz)
-	require.Empty(t, stored.RawOutputGz)
 
 	// The original run is left intact.
 	require.Equal(t, output, run.Output)
+	require.Equal(t, []byte(output), run.RawOutput)
 	require.Empty(t, run.OutputGz)
+}
+
+func TestPrepareForStorageKeepsDistinctRawOutput(t *testing.T) {
+	output := strings.Repeat("│ SHOW DATABASES │\n", 10000)
+	raw := pseudoRandomBytes(64 << 10)
+	run := &Run{ID: "id", Output: output, RawOutput: raw}
+
+	stored := prepareForStorage(run)
+
+	require.NotEmpty(t, stored.RawOutputGz)
+
+	require.NoError(t, restoreFromStorage(stored))
+	require.Equal(t, output, stored.Output)
+	require.Equal(t, raw, stored.RawOutput)
 }
 
 func TestPrepareForStorageTruncatesIncompressibleOutput(t *testing.T) {
@@ -61,14 +77,14 @@ func TestPrepareForStorageTruncatesIncompressibleOutput(t *testing.T) {
 
 	stored := prepareForStorage(run)
 
-	require.LessOrEqual(t, len(stored.OutputGz)+len(stored.RawOutputGz), storedOutputBudget)
+	require.Empty(t, stored.RawOutputGz)
+	require.LessOrEqual(t, len(stored.OutputGz), storedOutputBudget)
 
 	require.NoError(t, restoreFromStorage(stored))
 	require.True(t, strings.HasSuffix(stored.Output, truncationMarker))
 	require.LessOrEqual(t, len(stored.Output), truncatedOutputCap+len(truncationMarker))
 	require.True(t, utf8.ValidString(stored.Output))
-	require.Len(t, stored.RawOutput, truncatedOutputCap)
-	require.Equal(t, noise[:truncatedOutputCap], stored.RawOutput)
+	require.Empty(t, stored.RawOutput)
 }
 
 func TestPrepareForStorageWithoutRawOutput(t *testing.T) {

@@ -79,7 +79,8 @@ func TestRepositoryRoundTrip(t *testing.T) {
 	got, err := repo.Get(run.ID)
 	require.NoError(t, err)
 	require.Equal(t, padded, got.Output)
-	require.Equal(t, []byte(padded), got.RawOutput)
+	// The identical RawOutput is deduplicated; readers fall back to Output bytes.
+	require.Empty(t, got.RawOutput)
 	require.Empty(t, got.OutputGz)
 	require.Empty(t, got.RawOutputGz)
 
