@@ -161,12 +161,13 @@ func (r *Runner) RunQuery(ctx context.Context, run *queryrun.Run) (output string
 		return "", fmt.Errorf("failed to construct FQN: %w", err)
 	}
 
-	containerID, found, err := r.prewarmer.Fetch(state.imageFQN)
+	warm, found, err := r.prewarmer.Fetch(state.imageFQN)
 	if err != nil {
 		r.logger.Err(err).Str("run_id", state.runID).Msg("failed to fetch a prewarmed container")
 	}
 	if found {
-		state.containerID = containerID
+		state.containerID = warm.id
+		state.systemLogsPrepared = warm.systemLogsPrepared
 	} else {
 		err := r.createContainer(ctx, state)
 		if err != nil {
@@ -487,6 +488,8 @@ func (r *Runner) runQueryWithContainer(ctx context.Context, state *requestState)
 	}
 
 	if ready {
+		r.prepareSystemLogs(ctx, state)
+
 		stdout, stderr, err := r.execQuery(ctx, state)
 		if err != nil {
 			return "", err
@@ -517,7 +520,7 @@ func (r *Runner) waitUntilReady(ctx context.Context, state *requestState) (ready
 	defer deadline.Stop()
 
 	for {
-		stdout, stderr, exitCode, err := r.execCommand(ctx, state, []string{"clickhouse", "client", "--query", "SELECT 1"})
+		stdout, stderr, exitCode, err := r.execCommand(ctx, state, clientCommand("SELECT 1"))
 		if err != nil {
 			return false, "", err
 		}
@@ -534,6 +537,39 @@ func (r *Runner) waitUntilReady(ctx context.Context, state *requestState) (ready
 			continue
 		}
 	}
+}
+
+// prepareSystemLogs makes ClickHouse create the system.*_log tables (query_log, part_log, ...).
+//
+// The server does not create them on startup. Each one appears on the first flush of its log,
+// which by default happens 7.5 seconds after the server has started. A user query that runs
+// earlier fails with 'Table system.query_log does not exist'. SYSTEM FLUSH LOGS creates all
+// configured log tables right away.
+//
+// A failure is only logged: very old versions do not support the statement, and a run must not
+// fail because of it. It must be called after waitUntilReady reported that the server is ready.
+func (r *Runner) prepareSystemLogs(ctx context.Context, state *requestState) {
+	if state.systemLogsPrepared {
+		return
+	}
+
+	_, stderr, exitCode, err := r.execCommand(ctx, state, clientCommand("SYSTEM FLUSH LOGS"))
+	if err != nil {
+		r.logger.Warn().Err(err).Str("run_id", state.runID).Msg("failed to prepare system log tables")
+		return
+	}
+
+	// The step is not repeated even if the server rejected the statement: it would be rejected again.
+	state.systemLogsPrepared = true
+
+	if exitCode != 0 {
+		r.logger.Debug().Str("run_id", state.runID).Str("stderr", stderr).Msg("system log tables have not been prepared")
+	}
+}
+
+// clientCommand returns a command that runs a single service query with clickhouse-client.
+func clientCommand(query string) []string {
+	return []string{"clickhouse", "client", "--query", query}
 }
 
 func (r *Runner) execCommand(ctx context.Context, state *requestState, args []string) (stdout string, stderr string, exitCode int, err error) {

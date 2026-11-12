@@ -22,6 +22,10 @@ type containerState struct {
 
 	createdAt time.Time
 	status    containerStatus
+
+	// systemLogsPrepared is set once the system.*_log tables have been created
+	// in the container. Guarded by lock.
+	systemLogsPrepared bool
 }
 
 func (c *containerState) acquireLock() (release func()) {
