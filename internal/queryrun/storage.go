@@ -17,10 +17,13 @@ const (
 	// DynamoDB item limit with slack for the query input and the other attributes.
 	storedOutputBudget = 256 << 10
 
-	// Per-field cap applied when even the compressed outputs do not fit the budget
-	// (incompressible output). Gzip never expands input beyond a fraction of a
-	// percent, so capped sources are guaranteed to fit without a fitting loop.
-	truncatedOutputCap = 100 << 10
+	// Step at which an over-budget output is shortened while looking for the longest
+	// prefix that fits. Smaller steps waste less of the budget but cost more passes.
+	truncationChunk = 16 << 10
+
+	// Reserved out of the budget for gzip framing (header, trailer, block headers)
+	// when estimating how much of an output fits.
+	truncationReserve = 256
 
 	truncationMarker = "\n... (output truncated for storage)"
 )
@@ -37,21 +40,34 @@ func prepareForStorage(run *Run) *Run {
 	rawOutput := run.RawOutput
 
 	// A byte-identical RawOutput is not stored: readers fall back to Output bytes.
-	if bytes.Equal([]byte(output), rawOutput) {
+	if string(rawOutput) == output {
 		rawOutput = nil
 	}
 
 	outputGz := gzipBytes([]byte(output))
-	rawOutputGz := gzipBytes(rawOutput)
+
+	var rawOutputGz []byte
+	if len(rawOutput) > 0 {
+		rawOutputGz = gzipBytes(rawOutput)
+	}
 
 	if len(outputGz)+len(rawOutputGz) > storedOutputBudget {
-		output = truncateString(output, truncatedOutputCap) + truncationMarker
-		outputGz = gzipBytes([]byte(output))
-
-		if len(rawOutput) > truncatedOutputCap {
-			rawOutput = rawOutput[:truncatedOutputCap]
+		// Incompressible output: keep the longest prefix of each field that fits.
+		// Only a distinct RawOutput shares the budget; the common case gets all of it.
+		fieldBudget := storedOutputBudget
+		if len(rawOutput) > 0 {
+			fieldBudget /= 2
 		}
-		rawOutputGz = gzipBytes(rawOutput)
+
+		if len(outputGz) > fieldBudget {
+			_, outputGz = compressPrefix([]byte(output), []byte(truncationMarker), fieldBudget)
+		}
+
+		if len(rawOutputGz) > fieldBudget {
+			var kept int
+			kept, rawOutputGz = compressPrefix(rawOutput, nil, fieldBudget)
+			rawOutput = rawOutput[:kept]
+		}
 	}
 
 	stored := *run
@@ -91,25 +107,61 @@ func restoreFromStorage(run *Run) error {
 	return nil
 }
 
-// truncateString cuts the string at a rune boundary: DynamoDB rejects strings
-// that are not valid UTF-8.
-func truncateString(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
+// compressPrefix gzips the longest prefix of data, followed by suffix, whose gzip
+// form fits into budget bytes. It returns the prefix length and the gzip form.
+// The prefix is cut at a rune boundary, so a truncated string stays valid UTF-8.
+func compressPrefix(data, suffix []byte, budget int) (kept int, gz []byte) {
+	kept = estimatePrefixLength(data, budget-len(suffix))
 
-	for limit > 0 && !utf8.RuneStart(s[limit]) {
-		limit--
-	}
+	for {
+		kept = alignToRuneStart(data, kept)
 
-	return s[:limit]
+		gz = gzipBytes(data[:kept], suffix)
+		if len(gz) <= budget || kept == 0 {
+			return kept, gz
+		}
+
+		// The estimate was optimistic by whatever deflate still buffered: step back.
+		kept -= min(truncationChunk, kept)
+	}
 }
 
-func gzipBytes(data []byte) []byte {
+// estimatePrefixLength feeds data to gzip chunk by chunk and stops before the chunk
+// that could exceed budget if it did not compress at all. Flush does not push out
+// everything deflate buffers, so the result is an estimate that the caller verifies.
+func estimatePrefixLength(data []byte, budget int) int {
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+
+	kept := 0
+	for kept < len(data) && buf.Len()+truncationChunk+truncationReserve <= budget {
+		end := min(kept+truncationChunk, len(data))
+		_, _ = w.Write(data[kept:end])
+		_ = w.Flush()
+		kept = end
+	}
+
+	return kept
+}
+
+// alignToRuneStart moves the cut left, by at most the tail of one rune, so that it
+// does not split a UTF-8 sequence. Binary data that has no rune starts loses at
+// most utf8.UTFMax-1 bytes.
+func alignToRuneStart(data []byte, cut int) int {
+	for back := 0; back < utf8.UTFMax-1 && cut > 0 && cut < len(data) && !utf8.RuneStart(data[cut]); back++ {
+		cut--
+	}
+
+	return cut
+}
+
+func gzipBytes(parts ...[]byte) []byte {
 	var buf bytes.Buffer
 
 	w := gzip.NewWriter(&buf)
-	_, _ = w.Write(data)
+	for _, part := range parts {
+		_, _ = w.Write(part)
+	}
 	_ = w.Close()
 
 	return buf.Bytes()

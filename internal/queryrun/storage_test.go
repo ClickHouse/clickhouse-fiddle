@@ -1,6 +1,7 @@
 package queryrun
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -82,9 +83,45 @@ func TestPrepareForStorageTruncatesIncompressibleOutput(t *testing.T) {
 
 	require.NoError(t, restoreFromStorage(stored))
 	require.True(t, strings.HasSuffix(stored.Output, truncationMarker))
-	require.LessOrEqual(t, len(stored.Output), truncatedOutputCap+len(truncationMarker))
 	require.True(t, utf8.ValidString(stored.Output))
 	require.Empty(t, stored.RawOutput)
+
+	// The kept prefix is the original data and it uses the budget: the noise does not
+	// compress at all, so the cut lands within two chunks of the budget.
+	kept := strings.TrimSuffix(stored.Output, truncationMarker)
+	require.Equal(t, string(noise[:len(kept)]), kept)
+	require.Greater(t, len(kept), storedOutputBudget-2*truncationChunk)
+}
+
+func TestPrepareForStorageKeepsMoreOfLargerOutput(t *testing.T) {
+	prev := 0
+	for _, size := range []int{128 << 10, 256 << 10, 512 << 10, 1 << 20} {
+		noise := pseudoRandomBytes(size)
+		stored := prepareForStorage(&Run{ID: "id", Output: string(noise), RawOutput: noise})
+
+		require.LessOrEqual(t, len(stored.OutputGz), storedOutputBudget)
+		require.NoError(t, restoreFromStorage(stored))
+		// A larger output must never be stored shorter than a smaller one.
+		require.GreaterOrEqual(t, len(stored.Output), prev, "size %d", size)
+		prev = len(stored.Output)
+	}
+}
+
+func TestPrepareForStorageMarksOnlyTruncatedFields(t *testing.T) {
+	// Only the distinct RawOutput exceeds the budget; Output is tiny and must stay as is.
+	raw := pseudoRandomBytes(400 << 10)
+	run := &Run{ID: "id", Output: "1\n", RawOutput: raw}
+
+	stored := prepareForStorage(run)
+
+	require.LessOrEqual(t, len(stored.OutputGz)+len(stored.RawOutputGz), storedOutputBudget)
+
+	require.NoError(t, restoreFromStorage(stored))
+	require.Equal(t, "1\n", stored.Output)
+	require.Less(t, len(stored.RawOutput), len(raw))
+	require.Equal(t, raw[:len(stored.RawOutput)], stored.RawOutput)
+	// RawOutput gets half of the budget and fills it to within two chunks.
+	require.Greater(t, len(stored.RawOutput), storedOutputBudget/2-2*truncationChunk)
 }
 
 func TestPrepareForStorageWithoutRawOutput(t *testing.T) {
@@ -100,14 +137,20 @@ func TestPrepareForStorageWithoutRawOutput(t *testing.T) {
 	require.Empty(t, stored.RawOutput)
 }
 
-func TestTruncateStringKeepsUTF8Valid(t *testing.T) {
-	s := strings.Repeat("│", 100) // 3 bytes per rune
+func TestAlignToRuneStartKeepsUTF8Valid(t *testing.T) {
+	s := []byte(strings.Repeat("│", 100)) // 3 bytes per rune
 
 	for limit := 1; limit < 10; limit++ {
-		truncated := truncateString(s, limit)
-		require.LessOrEqual(t, len(truncated), limit)
-		require.True(t, utf8.ValidString(truncated))
+		cut := alignToRuneStart(s, limit)
+		require.LessOrEqual(t, cut, limit)
+		require.True(t, utf8.Valid(s[:cut]))
 	}
+
+	// Binary data without rune starts loses at most three bytes (the longest rune tail).
+	cont := bytes.Repeat([]byte{0x80}, 100)
+	require.Equal(t, 47, alignToRuneStart(cont, 50))
+	// A cut at the end does not move.
+	require.Equal(t, len(s), alignToRuneStart(s, len(s)))
 }
 
 func TestRestoreFromStoragePlainRunIsUntouched(t *testing.T) {
