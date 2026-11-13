@@ -15,6 +15,16 @@ import (
 type containerRunner interface {
 	createContainer(ctx context.Context, state *requestState) error
 	waitUntilReady(ctx context.Context, state *requestState) (ready bool, lastOutput string, err error)
+	prepareSystemLogs(ctx context.Context, state *requestState)
+}
+
+// warmContainer is a prewarmed container handed over to a query run.
+type warmContainer struct {
+	id string
+
+	// systemLogsPrepared tells the run that the system.*_log tables already exist,
+	// so it does not have to create them again.
+	systemLogsPrepared bool
 }
 
 // prewarmer predicts which image tags will be requested to start a container
@@ -175,9 +185,17 @@ func (p *prewarmer) runContainer(request *requestState) error {
 			return
 		}
 
+		// Create the system log tables before the pause, so the run that
+		// fetches this container does not spend time on it.
+		p.runner.prepareSystemLogs(p.ctx, &state)
+
 		release := container.acquireLock()
 		defer release()
 
+		container.systemLogsPrepared = state.systemLogsPrepared
+
+		// A run may have fetched the container in the meantime. It has not seen
+		// the flag above, so it prepares the tables on its own.
 		if container.status != statusRunning {
 			return
 		}
@@ -247,27 +265,27 @@ func (p *prewarmer) PushNewRequest(request requestState) {
 	p.notify()
 }
 
-// Fetch returns id of a warm container if it exists.
+// Fetch returns a warm container if it exists.
 // It is safe to exec in the returned container immediately
 // (containers are unpaused when they are fetched).
-func (p *prewarmer) Fetch(imageFQN string) (containerID string, found bool, err error) {
+func (p *prewarmer) Fetch(imageFQN string) (warm warmContainer, found bool, err error) {
 	c := p.extractContainer(imageFQN)
 	if c == nil {
 		p.metr.FetchMiss()
 		p.logger.Debug().Str("image", imageFQN).Msg("prewarmer cache miss")
 
-		return "", false, nil
+		return warmContainer{}, false, nil
 	}
 
-	err = p.unpauseIfNecessary(c)
+	systemLogsPrepared, err := p.unpauseIfNecessary(c)
 	if err != nil {
-		return "", false, err
+		return warmContainer{}, false, err
 	}
 
 	p.metr.FetchHit()
 	p.logger.Debug().Str("id", c.id).Str("image", c.imageFQN).Msg("prewarmer cache hit")
 
-	return c.id, true, nil
+	return warmContainer{id: c.id, systemLogsPrepared: systemLogsPrepared}, true, nil
 }
 
 func (p *prewarmer) extractContainer(imageFQN string) (container *containerState) {
@@ -288,22 +306,24 @@ func (p *prewarmer) extractContainer(imageFQN string) (container *containerState
 	return container
 }
 
-func (p *prewarmer) unpauseIfNecessary(c *containerState) error {
+// unpauseIfNecessary marks the container as fetched and resumes it if it was paused.
+// It also reports whether the system log tables had been created by that moment.
+func (p *prewarmer) unpauseIfNecessary(c *containerState) (systemLogsPrepared bool, err error) {
 	release := c.acquireLock()
 	defer release()
 
 	defer c.setStatus(statusFetched)
 
 	if c.status == statusRunning {
-		return nil
+		return c.systemLogsPrepared, nil
 	}
 
-	err := p.engine.unpauseContainer(p.ctx, c.id)
+	err = p.engine.unpauseContainer(p.ctx, c.id)
 	if err != nil {
-		return fmt.Errorf("unpause failed: %w", err)
+		return false, fmt.Errorf("unpause failed: %w", err)
 	}
 
 	p.logger.Debug().Str("id", c.id).Str("image", c.imageFQN).Msg("container has been unpaused")
 
-	return nil
+	return c.systemLogsPrepared, nil
 }

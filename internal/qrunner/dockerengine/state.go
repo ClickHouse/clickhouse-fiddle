@@ -23,4 +23,8 @@ type requestState struct {
 	imageFQN string
 
 	containerID string
+
+	// systemLogsPrepared is set once the system.*_log tables have been created
+	// in the container, see Runner.prepareSystemLogs.
+	systemLogsPrepared bool
 }
