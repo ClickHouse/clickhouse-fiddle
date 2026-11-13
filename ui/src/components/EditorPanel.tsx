@@ -37,6 +37,8 @@ interface EditorPanelProps {
   initialInput: string;
   output: string;
   rawOutput: Uint8Array | undefined;
+  // Shown above the output when it is not the full result (cut by the server, or not stored).
+  outputNotice: string;
   timeElapsed: string | undefined;
   requestIsRunning: boolean;
   followOutput: boolean;
@@ -49,6 +51,7 @@ function EditorPanel({
   initialInput,
   output,
   rawOutput,
+  outputNotice,
   timeElapsed,
   requestIsRunning,
   followOutput,
@@ -195,6 +198,7 @@ function EditorPanel({
           {showHexViewer ? (
             <PanelGroup direction="vertical" style={{ height: '100%', minHeight: 0 }}>
               <Panel defaultSize={65} minSize={20} style={outputPaneStyle}>
+                {outputNotice && <div className="output-notice">{outputNotice}</div>}
                 {outputEditor}
                 {timeElapsed && <div className="time-elapsed">{timeElapsed}</div>}
               </Panel>
@@ -209,6 +213,7 @@ function EditorPanel({
             </PanelGroup>
           ) : (
             <div style={outputPaneStyle}>
+              {outputNotice && <div className="output-notice">{outputNotice}</div>}
               {outputEditor}
               {timeElapsed && <div className="time-elapsed">{timeElapsed}</div>}
             </div>

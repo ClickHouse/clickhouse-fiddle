@@ -125,6 +125,16 @@ body,
   background: var(--click-global-color-stroke-intense);
 }
 
+.output-notice {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--click-global-color-shadow-default);
+  background: var(--click-global-color-background-muted);
+  color: var(--click-global-color-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .time-elapsed {
   position: absolute;
   bottom: 0;

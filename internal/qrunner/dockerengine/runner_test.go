@@ -110,7 +110,7 @@ func TestCustomSettings(t *testing.T) {
 		if err != nil {
 			t.Log(err.Error())
 		}
-		assert.Contains(t, output, tc.expectedOutput, "output doesn't contain expected results")
+		assert.Contains(t, output.Output, tc.expectedOutput, "output doesn't contain expected results")
 	}
 }
 
@@ -134,7 +134,7 @@ func TestSystemLogTablesExistFromTheStart(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		return output
+		return output.Output
 	}
 
 	// The prewarmer is not started yet, so every run gets a container that has just been created.
@@ -227,4 +227,50 @@ func newTestRunner(ctx context.Context, t *testing.T) *Runner {
 	})
 
 	return runner
+}
+
+func TestOutputIsCutAtTheCap(t *testing.T) {
+	if os.Getenv("RUN_DOCKER_TESTS") == "" {
+		t.Skip("Skipping a docker test. Set RUN_DOCKER_TESTS=true to enable.")
+	}
+
+	ctx := context.Background()
+	runner := newTestRunner(ctx, t)
+	runner.cfg.MaxOutputBytes = 10_000
+
+	// About 78 MB of output; the runner must stop reading at the cap and return quickly.
+	output, err := runner.RunQuery(ctx, &queryrun.Run{
+		Input:    "SELECT number FROM numbers(10000000)",
+		Version:  "latest",
+		Database: "clickhouse",
+		Settings: &runsettings.ClickHouseSettings{},
+	})
+	require.NoError(t, err)
+
+	require.True(t, output.Truncated)
+	require.LessOrEqual(t, len(output.Output), 10_000)
+	require.True(t, strings.HasPrefix(output.Output, "0\n1\n2\n"), "the beginning of the output is kept")
+}
+
+func TestLongQueryIsAcceptedOverStdin(t *testing.T) {
+	if os.Getenv("RUN_DOCKER_TESTS") == "" {
+		t.Skip("Skipping a docker test. Set RUN_DOCKER_TESTS=true to enable.")
+	}
+
+	ctx := context.Background()
+	runner := newTestRunner(ctx, t)
+
+	// 200 KB: above the 128 KiB the kernel allows for one command-line argument, below
+	// ClickHouse's own default max_query_size of 256 KiB.
+	query := "SELECT length('" + strings.Repeat("x", 200_000) + "')"
+	output, err := runner.RunQuery(ctx, &queryrun.Run{
+		Input:    query,
+		Version:  "latest",
+		Database: "clickhouse",
+		Settings: &runsettings.ClickHouseSettings{},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "200000\n", output.Output)
+	require.False(t, output.Truncated)
 }

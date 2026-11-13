@@ -2,7 +2,9 @@ package queryrun
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -18,19 +20,20 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// TestRepositoryRoundTrip verifies that runs whose plain representation exceeds the
-// DynamoDB 400 KB item limit survive Create/Get against a real local DynamoDB,
-// which enforces the limit.
+// TestRepositoryRoundTrip verifies Create/Get against a real local DynamoDB, which
+// enforces the 400 KB item limit: a large compressible output is stored in full, an
+// output that does not fit even compressed is dropped with a flag, and a small run
+// round-trips with its exact bytes.
 func TestRepositoryRoundTrip(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping a test that starts a DynamoDB container.")
+	if os.Getenv("RUN_DOCKER_TESTS") == "" {
+		t.Skip("Skipping a docker test. Set RUN_DOCKER_TESTS=true to enable.")
 	}
 
 	ctx := context.Background()
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "amazon/dynamodb-local:latest",
+			Image:        "amazon/dynamodb-local:2.6.1",
 			ExposedPorts: []string{"8000/tcp"},
 			WaitingFor:   wait.ForListeningPort("8000/tcp"),
 		},
@@ -66,8 +69,8 @@ func TestRepositoryRoundTrip(t *testing.T) {
 
 	repo := NewRepository(ctx, client, tableName)
 
-	// The system.privileges incident shape: ~370 KB of padded Pretty output,
-	// stored both as Output and RawOutput (~740 KB plain, far beyond the item limit).
+	// The system.privileges incident shape: ~370 KB of padded Pretty output, far beyond
+	// the item limit as plain text, a few KB gzipped.
 	padded := strings.Repeat("│ ALTER UPDATE   │ ['UPDATE']   │ COLUMN   │ ALTER TABLE │\n", 6200)
 	run := New("SELECT * FROM system.privileges;", "clickhouse", "latest", "release",
 		&runsettings.ClickHouseSettings{OutputFormat: "PrettyMonoBlock"})
@@ -75,23 +78,48 @@ func TestRepositoryRoundTrip(t *testing.T) {
 	run.RawOutput = []byte(padded)
 
 	require.NoError(t, repo.Create(run))
+	require.False(t, run.OutputDropped)
 
 	got, err := repo.Get(run.ID)
 	require.NoError(t, err)
 	require.Equal(t, padded, got.Output)
-	// The identical RawOutput is deduplicated; readers fall back to Output bytes.
-	require.Empty(t, got.RawOutput)
+	require.Equal(t, []byte(padded), got.RawOutput)
+	require.False(t, got.OutputDropped)
 	require.Empty(t, got.OutputGz)
-	require.Empty(t, got.RawOutputGz)
 
-	// A small run keeps the plain, console-readable representation.
-	small := New("SELECT 1", "clickhouse", "latest", "release", &runsettings.ClickHouseSettings{})
-	small.Output = "1\n"
-	small.RawOutput = []byte("1\n")
+	// Output that does not compress (random bytes) and does not fit the item: the run is
+	// stored without it, and both the saved run and the read one carry the flag.
+	noise := make([]byte, 600<<10)
+	_, err = rand.Read(noise)
+	require.NoError(t, err)
+
+	large := New("SELECT randomString(600000)", "clickhouse", "latest", "release", &runsettings.ClickHouseSettings{})
+	large.Output = string(noise)
+	large.RawOutput = noise
+	large.OutputTruncated = true
+
+	require.NoError(t, repo.Create(large))
+	require.True(t, large.OutputDropped)
+	// The caller's copy of the output is untouched: the response still carries it.
+	require.Equal(t, noise, large.RawOutput)
+
+	gotLarge, err := repo.Get(large.ID)
+	require.NoError(t, err)
+	require.True(t, gotLarge.OutputDropped)
+	require.True(t, gotLarge.OutputTruncated)
+	require.Empty(t, gotLarge.Output)
+	require.Empty(t, gotLarge.RawOutput)
+	require.Equal(t, "SELECT randomString(600000)", gotLarge.Input)
+
+	// A small run with bytes that are not valid UTF-8 comes back exactly.
+	small := New("SELECT unhex('FF00')", "clickhouse", "latest", "release", &runsettings.ClickHouseSettings{})
+	small.Output = "\xff\\0\n"
+	small.RawOutput = []byte(small.Output)
 
 	require.NoError(t, repo.Create(small))
 
 	gotSmall, err := repo.Get(small.ID)
 	require.NoError(t, err)
-	require.Equal(t, "1\n", gotSmall.Output)
+	require.Equal(t, []byte{0xff, '\\', '0', '\n'}, gotSmall.RawOutput)
+	require.Equal(t, "\xff\\0\n", gotSmall.Output)
 }

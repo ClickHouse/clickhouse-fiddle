@@ -35,10 +35,24 @@ func NewRepository(ctx context.Context, client *dynamodb.Client, tableName strin
 	}
 }
 
+// Create stores the run with its output gzipped. When even the compressed item exceeds
+// the DynamoDB size limit, the run is stored without the output and run.OutputDropped
+// is set, so the caller can tell the user that the stored run has no output.
 func (r *Repo) Create(run *Run) error {
-	marshaled, err := attributevalue.MarshalMap(prepareForStorage(run))
+	stored := prepareForStorage(run)
+
+	marshaled, err := attributevalue.MarshalMap(stored)
 	if err != nil {
 		return errors.Wrap(err, "marshal failed")
+	}
+
+	if itemSize(marshaled) > maxItemSize {
+		marshaled, err = attributevalue.MarshalMap(dropOutput(stored))
+		if err != nil {
+			return errors.Wrap(err, "marshal failed")
+		}
+
+		run.OutputDropped = true
 	}
 
 	_, err = r.client.PutItem(r.ctx, &dynamodb.PutItemInput{

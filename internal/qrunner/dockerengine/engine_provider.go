@@ -238,8 +238,12 @@ func (p *engineProvider) unpauseContainer(ctx context.Context, id string) error 
 
 // exec executes the given command in the container and attaches to it.
 // Keep in mind that you have to close the returned response.
-func (p *engineProvider) exec(ctx context.Context, containerID string, cmd []string) (types.HijackedResponse, string, error) {
+// A non-empty stdin is written to the process and then its stdin is closed. Passing
+// input this way, instead of as an argument, avoids the kernel's per-argument length
+// limit (128 KiB on Linux), which otherwise bounds the query size.
+func (p *engineProvider) exec(ctx context.Context, containerID string, cmd []string, stdin []byte) (types.HijackedResponse, string, error) {
 	exec, err := p.cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
+		AttachStdin:  len(stdin) > 0,
 		AttachStderr: true,
 		AttachStdout: true,
 		Cmd:          cmd,
@@ -251,6 +255,15 @@ func (p *engineProvider) exec(ctx context.Context, containerID string, cmd []str
 	resp, err := p.cli.ContainerExecAttach(ctx, exec.ID, container.ExecStartOptions{})
 	if err != nil {
 		return types.HijackedResponse{}, "", errors.Wrap(err, "exec attach failed")
+	}
+
+	if len(stdin) > 0 {
+		// Written concurrently: the process may not read stdin before it produces output,
+		// and the caller reads that output from the same connection.
+		go func() {
+			_, _ = resp.Conn.Write(stdin)
+			_ = resp.CloseWrite()
+		}()
 	}
 
 	return resp, exec.ID, nil

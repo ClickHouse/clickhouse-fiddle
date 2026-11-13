@@ -10,6 +10,11 @@ type Config struct {
 
 	DefaultOutputFormat string
 
+	// MaxOutputBytes caps the combined stdout and stderr read from a query. The runner
+	// stops reading at the cap and reports the output as truncated, so one query cannot
+	// exhaust the server's memory. 0 means unlimited.
+	MaxOutputBytes uint64
+
 	// Path to the xml or yaml config which will be mounted to the ../config.d/ directory.
 	CustomConfigPath *string
 
@@ -79,6 +84,7 @@ var DefaultConfig = Config{
 	ReadyTimeout:   30 * time.Second,
 
 	DefaultOutputFormat: "TabSeparated",
+	MaxOutputBytes:      10 << 20,
 
 	CustomConfigPath: nil,
 	QuotasPath:       nil,

@@ -13,6 +13,12 @@ AI agents can do a great job of explaining the specification, generating a clien
 - `POST /runs` executes a SQL query and returns its output and a query-run ID.
 - `GET /runs/{id}` retrieves the details and output of a previously completed query run.
 
+## Output size
+
+The server reads at most `max_output_length` bytes of output. A longer output is cut there and the response has `output_truncated: true`; the query itself still succeeds.
+
+The output is stored gzipped. When the stored run would exceed the DynamoDB item size limit (400 KB), the run is stored without its output and both `POST /runs` and `GET /runs/{id}` report `output_dropped: true`. The `POST` response still carries the output; `GET` returns the query with an empty output, and the client has to run the query again to see the result.
+
 ## Flows
 
 For a release query, call `GET /tags`, select a version, then send the SQL and version to `POST /runs`. Use the returned `query_run_id` with `GET /runs/{id}` when you need to retrieve the stored run.
