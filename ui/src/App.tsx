@@ -47,9 +47,28 @@ type State = {
   buildElapsedSec: number;
   output: string;
   rawOutput: Uint8Array | undefined;
+  // A note shown above the output: the output was cut or was not stored.
+  outputNotice: string;
   timeElapsed?: string;
   showHexViewer: boolean;
 };
+
+type OutputFlags = { outputTruncated: boolean; outputDropped: boolean };
+
+// outputNotice explains to the user why the output is not the full result. `stored` tells
+// whether the run was loaded from storage (a share link) or has just been executed.
+function outputNotice(flags: OutputFlags, stored: boolean): string {
+  const notes: string[] = [];
+  if (flags.outputTruncated) {
+    notes.push('The output was cut by the server at its size limit.');
+  }
+  if (flags.outputDropped) {
+    notes.push(stored
+      ? 'The output of this run was too large to store. Run the query again to see it.'
+      : 'The output is too large to store: this link will open without it.');
+  }
+  return notes.join(' ');
+}
 
 interface AppProps {
   navigate: NavigateFunction;
@@ -86,6 +105,7 @@ class App extends React.Component<AppProps, State> {
       buildElapsedSec: 0,
       output: '',
       rawOutput: undefined,
+      outputNotice: '',
       timeElapsed: undefined,
       showHexViewer: false,
     };
@@ -222,6 +242,7 @@ class App extends React.Component<AppProps, State> {
           initialInput: result.input,
           output: result.output,
           rawOutput: result.outputBytes,
+          outputNotice: outputNotice(result, true),
           selectedVersion: result.version,
           selectedBuildType: result.buildType,
         });
@@ -232,6 +253,7 @@ class App extends React.Component<AppProps, State> {
           input: '',
           output: error.message,
           rawOutput: undefined,
+          outputNotice: '',
         });
       })
       .finally(() => this.setState({
@@ -295,6 +317,7 @@ class App extends React.Component<AppProps, State> {
       requestIsRunning: true,
       output: '',
       rawOutput: undefined,
+      outputNotice: '',
       buildStatus: '',
       timeElapsed: undefined,
     });
@@ -316,7 +339,9 @@ class App extends React.Component<AppProps, State> {
         }
 
         // Keep the timer running through container start + query execution.
-        this.setState({ buildStatus: 'Running query', output: '', rawOutput: undefined });
+        this.setState({
+          buildStatus: 'Running query', output: '', rawOutput: undefined, outputNotice: '',
+        });
       }
 
       const result: RunQueryResponse = await this.client.runQuery(
@@ -329,6 +354,7 @@ class App extends React.Component<AppProps, State> {
       this.setState({
         output: result.output,
         rawOutput: result.outputBytes,
+        outputNotice: outputNotice(result, false),
         timeElapsed: result.timeElapsed,
       });
 
@@ -341,6 +367,7 @@ class App extends React.Component<AppProps, State> {
       this.setState({
         output: (error as Error).message,
         rawOutput: undefined,
+        outputNotice: '',
       });
     } finally {
       this.stopBuildTimer();
@@ -397,6 +424,7 @@ class App extends React.Component<AppProps, State> {
           initialInput={this.state.initialInput}
           output={this.state.output}
           rawOutput={this.state.rawOutput}
+          outputNotice={this.state.outputNotice}
           timeElapsed={this.state.timeElapsed}
           requestIsRunning={this.state.requestIsRunning}
           followOutput={this.state.requestIsRunning && this.state.buildStatus !== ''}

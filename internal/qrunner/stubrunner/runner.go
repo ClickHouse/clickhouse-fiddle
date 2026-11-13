@@ -10,10 +10,10 @@ import (
 	"github.com/pkg/errors"
 )
 
-type Run = func(ctx context.Context, run *queryrun.Run) (string, error)
+type Run = func(ctx context.Context, run *queryrun.Run) (qrunner.QueryOutput, error)
 
-var StubRun = func(ctx context.Context, run *queryrun.Run) (string, error) {
-	return "", errors.New("stub cannot run queries")
+var StubRun = func(ctx context.Context, run *queryrun.Run) (qrunner.QueryOutput, error) {
+	return qrunner.QueryOutput{}, errors.New("stub cannot run queries")
 }
 
 // Runner is a stub runner for tests.
@@ -54,7 +54,7 @@ func (r *Runner) Stop(_ context.Context) error {
 	return nil
 }
 
-func (r *Runner) RunQuery(ctx context.Context, run *queryrun.Run) (string, error) {
+func (r *Runner) RunQuery(ctx context.Context, run *queryrun.Run) (qrunner.QueryOutput, error) {
 	return r.run(ctx, run)
 }
 

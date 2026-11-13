@@ -141,10 +141,10 @@ func (r *Runner) Stop(shutdownCtx context.Context) error {
 	return nil
 }
 
-func (r *Runner) RunQuery(ctx context.Context, run *queryrun.Run) (output string, err error) {
+func (r *Runner) RunQuery(ctx context.Context, run *queryrun.Run) (output qrunner.QueryOutput, err error) {
 	bt, err := buildtype.Parse(run.BuildType)
 	if err != nil {
-		return "", err
+		return qrunner.QueryOutput{}, err
 	}
 
 	state := &requestState{
@@ -158,7 +158,7 @@ func (r *Runner) RunQuery(ctx context.Context, run *queryrun.Run) (output string
 
 	state.imageTag, state.imageFQN, err = r.resolveImage(ctx, state.version, state.buildType)
 	if err != nil {
-		return "", fmt.Errorf("failed to construct FQN: %w", err)
+		return qrunner.QueryOutput{}, fmt.Errorf("failed to construct FQN: %w", err)
 	}
 
 	warm, found, err := r.prewarmer.Fetch(state.imageFQN)
@@ -171,7 +171,7 @@ func (r *Runner) RunQuery(ctx context.Context, run *queryrun.Run) (output string
 	} else {
 		err := r.createContainer(ctx, state)
 		if err != nil {
-			return "", fmt.Errorf("failed to create container: %w", err)
+			return qrunner.QueryOutput{}, fmt.Errorf("failed to create container: %w", err)
 		}
 	}
 
@@ -202,7 +202,7 @@ func (r *Runner) RunQuery(ctx context.Context, run *queryrun.Run) (output string
 
 	output, err = r.runQueryWithContainer(ctx, state)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to run query")
+		return qrunner.QueryOutput{}, errors.Wrap(err, "failed to run query")
 	}
 
 	return output, nil
@@ -448,7 +448,9 @@ func (r *Runner) runContainer(ctx context.Context, state *requestState) (err err
 	return nil
 }
 
-func (r *Runner) execQuery(ctx context.Context, state *requestState) (stdout string, stderr string, err error) {
+// execQuery runs the user's query. The query text goes to the client over stdin, not as
+// an argument, so its size is not bounded by the kernel's argument length limit.
+func (r *Runner) execQuery(ctx context.Context, state *requestState) (result execResult, err error) {
 	var args []string
 
 	switch state.settings.Type() {
@@ -457,57 +459,57 @@ func (r *Runner) execQuery(ctx context.Context, state *requestState) (stdout str
 			"clickhouse", "client",
 			"-n",
 			"-m",
-			"--query", state.query,
 		}
 
 		settings, ok := state.settings.(*runsettings.ClickHouseSettings)
 		if !ok {
-			return "", "", errors.Errorf("invalid settings for type %s", state.settings.Type())
+			return execResult{}, errors.Errorf("invalid settings for type %s", state.settings.Type())
 		}
 
 		formatArgs := settings.FormatArgs(state.version, r.cfg.DefaultOutputFormat)
 		args = append(args, formatArgs...)
 	default:
-		return "", "", errors.Errorf("unknown settings type %s", state.settings.Type())
+		return execResult{}, errors.Errorf("unknown settings type %s", state.settings.Type())
 	}
 
-	stdout, stderr, _, err = r.execCommand(ctx, state, args)
-
-	return stdout, stderr, err
+	return r.execCommand(ctx, state, args, []byte(state.query))
 }
 
-func (r *Runner) runQueryWithContainer(ctx context.Context, state *requestState) (output string, err error) {
+func (r *Runner) runQueryWithContainer(ctx context.Context, state *requestState) (output qrunner.QueryOutput, err error) {
 	invokedAt := time.Now()
 	defer func() {
 		r.pipelineMetr.RunQuery(err == nil, state.version, invokedAt)
 	}()
 
-	ready, output, err := r.waitUntilReady(ctx, state)
+	ready, lastOutput, err := r.waitUntilReady(ctx, state)
 	if err != nil {
-		return "", err
+		return qrunner.QueryOutput{}, err
 	}
+
+	output.Output = lastOutput
 
 	if ready {
 		r.prepareSystemLogs(ctx, state)
 
-		stdout, stderr, err := r.execQuery(ctx, state)
+		result, err := r.execQuery(ctx, state)
 		if err != nil {
-			return "", err
+			return qrunner.QueryOutput{}, err
 		}
 
-		r.logger.Debug().Str("run_id", state.runID).Msg("query has been executed")
+		r.logger.Debug().Str("run_id", state.runID).Bool("truncated", result.truncated).Msg("query has been executed")
 
-		output = combineOutput(stdout, stderr)
+		output.Output = combineOutput(result.stdout, result.stderr)
+		output.Truncated = result.truncated
 	}
 
 	// Sanitizer/debug builds print sanitizer reports (data races, use-after-free, UB, ...) to
 	// the server's stderr, which the client never sees. Capture it and forward it to the user.
 	if !state.buildType.IsRelease() {
 		if report := r.collectSanitizerReport(ctx, state); report != "" {
-			if output != "" {
-				output += "\n\n"
+			if output.Output != "" {
+				output.Output += "\n\n"
 			}
-			output += report
+			output.Output += report
 		}
 	}
 
@@ -520,19 +522,19 @@ func (r *Runner) waitUntilReady(ctx context.Context, state *requestState) (ready
 	defer deadline.Stop()
 
 	for {
-		stdout, stderr, exitCode, err := r.execCommand(ctx, state, clientCommand("SELECT 1"))
+		probe, err := r.execCommand(ctx, state, clientCommand("SELECT 1"), nil)
 		if err != nil {
 			return false, "", err
 		}
 
-		if exitCode == 0 {
+		if probe.exitCode == 0 {
 			return true, "", nil
 		}
 
 		select {
 		case <-deadline.C:
-			r.logger.Warn().Str("run_id", state.runID).Str("stderr", stderr).Msg("database has not become ready in time")
-			return false, combineOutput(stdout, stderr), nil
+			r.logger.Warn().Str("run_id", state.runID).Str("stderr", probe.stderr).Msg("database has not become ready in time")
+			return false, combineOutput(probe.stdout, probe.stderr), nil
 		case <-time.NewTimer(r.cfg.ExecRetryDelay).C:
 			continue
 		}
@@ -553,7 +555,7 @@ func (r *Runner) prepareSystemLogs(ctx context.Context, state *requestState) {
 		return
 	}
 
-	_, stderr, exitCode, err := r.execCommand(ctx, state, clientCommand("SYSTEM FLUSH LOGS"))
+	flush, err := r.execCommand(ctx, state, clientCommand("SYSTEM FLUSH LOGS"), nil)
 	if err != nil {
 		r.logger.Warn().Err(err).Str("run_id", state.runID).Msg("failed to prepare system log tables")
 		return
@@ -562,8 +564,8 @@ func (r *Runner) prepareSystemLogs(ctx context.Context, state *requestState) {
 	// The step is not repeated even if the server rejected the statement: it would be rejected again.
 	state.systemLogsPrepared = true
 
-	if exitCode != 0 {
-		r.logger.Debug().Str("run_id", state.runID).Str("stderr", stderr).Msg("system log tables have not been prepared")
+	if flush.exitCode != 0 {
+		r.logger.Debug().Str("run_id", state.runID).Str("stderr", flush.stderr).Msg("system log tables have not been prepared")
 	}
 }
 
@@ -572,45 +574,71 @@ func clientCommand(query string) []string {
 	return []string{"clickhouse", "client", "--query", query}
 }
 
-func (r *Runner) execCommand(ctx context.Context, state *requestState, args []string) (stdout string, stderr string, exitCode int, err error) {
+// execResult is what a command run inside the container produced.
+type execResult struct {
+	stdout string
+	stderr string
+	// truncated is set when reading stopped at Config.MaxOutputBytes. The exit code is
+	// then meaningless: the process may still be running.
+	truncated bool
+	exitCode  int
+}
+
+// execCommand runs args inside the container and collects its output. A non-empty stdin is
+// passed to the process. Reading stops once stdout and stderr together reach
+// Config.MaxOutputBytes; the result is then marked truncated.
+func (r *Runner) execCommand(ctx context.Context, state *requestState, args []string, stdin []byte) (result execResult, err error) {
 	invokedAt := time.Now()
 	defer func() {
 		r.pipelineMetr.ExecCommand(err == nil, state.version, invokedAt)
 	}()
 
-	resp, execID, err := r.engine.exec(ctx, state.containerID, args)
+	resp, execID, err := r.engine.exec(ctx, state.containerID, args, stdin)
 	if err != nil {
-		return "", "", 0, errors.Wrap(err, "exec failed")
+		return execResult{}, errors.Wrap(err, "exec failed")
 	}
 	defer resp.Close()
 
 	// https://github.com/moby/moby/blob/8e610b2b55bfd1bfa9436ab110d311f5e8a74dcb/integration/internal/container/exec.go#L38
+	limit := newOutputLimit(r.cfg.MaxOutputBytes)
 	var outBuf, errBuf bytes.Buffer
-	outputDone := make(chan error)
+	outputDone := make(chan error, 1) // Buffered: the copier must not block if the context ends first.
 
 	go func() {
-		_, err = stdcopy.StdCopy(&outBuf, &errBuf, resp.Reader)
+		_, err := stdcopy.StdCopy(limit.writer(&outBuf), limit.writer(&errBuf), resp.Reader)
 		outputDone <- err
 	}()
 
 	select {
 	case err := <-outputDone:
-		if err != nil {
-			return "", "", 0, errors.Wrap(err, "failed to get output")
+		if err != nil && !errors.Is(err, errOutputLimitReached) {
+			return execResult{}, errors.Wrap(err, "failed to get output")
 		}
 
 	case <-ctx.Done():
-		return "", "", 0, ctx.Err()
+		return execResult{}, ctx.Err()
 	}
 
-	exitCode, err = r.engine.execExitCode(ctx, execID)
+	result.stdout = outBuf.String()
+	result.stderr = errBuf.String()
+	result.truncated = limit.reached()
+
+	if result.truncated {
+		// The process is still writing into a pipe nobody reads. The container is removed
+		// once the run finishes, which ends it; the exit code is not waited for.
+		r.logger.Info().Str("run_id", state.runID).Uint64("limit", r.cfg.MaxOutputBytes).Msg("output cut at the size limit")
+
+		return result, nil
+	}
+
+	result.exitCode, err = r.engine.execExitCode(ctx, execID)
 	if err != nil {
-		return "", "", 0, err
+		return execResult{}, err
 	}
 
 	r.logger.Debug().Str("run_id", state.runID).Dur("elapsed_ms", time.Since(invokedAt)).Msg("exec finished")
 
-	return outBuf.String(), errBuf.String(), exitCode, nil
+	return result, nil
 }
 
 func combineOutput(stdout, stderr string) string {

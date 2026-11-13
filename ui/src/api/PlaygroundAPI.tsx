@@ -22,6 +22,10 @@ export type GetQueryRunResponse = {
   input: string;
   output: string;
   outputBytes: Uint8Array;
+  // The server cut the output at its size cap during the run.
+  outputTruncated: boolean;
+  // The output was not stored: it did not fit the storage item size limit.
+  outputDropped: boolean;
   queryRunId: string;
 };
 
@@ -29,6 +33,8 @@ export type RunQueryResponse = {
   queryRunId: string;
   output: string;
   outputBytes: Uint8Array;
+  outputTruncated: boolean;
+  outputDropped: boolean;
   timeElapsed: string;
 };
 
@@ -188,6 +194,8 @@ export class Client {
             queryRunId: response.result.query_run_id,
             output: response.result.output,
             outputBytes: decodeOutputBytes(response.result.output, response.result.output_base64),
+            outputTruncated: response.result.output_truncated === true,
+            outputDropped: response.result.output_dropped === true,
             timeElapsed: response.result.time_elapsed,
           };
         }
@@ -209,6 +217,8 @@ export class Client {
             input: response.result.input,
             output: response.result.output,
             outputBytes: decodeOutputBytes(response.result.output, response.result.output_base64),
+            outputTruncated: response.result.output_truncated === true,
+            outputDropped: response.result.output_dropped === true,
             queryRunId: response.result.query_run_id,
           };
         }

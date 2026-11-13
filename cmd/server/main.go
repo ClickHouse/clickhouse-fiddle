@@ -173,15 +173,14 @@ func newRouterOpts(
 	lim := config.Limits
 
 	return api.RouterOpts{
-		Logger:          logger,
-		Runner:          runner,
-		Preparer:        preparer,
-		TagStorage:      tagStorage,
-		RunRepo:         runRepo,
-		Timeout:         config.API.ServerTimeout,
-		CacheDisabled:   config.API.CacheDisabled,
-		MaxQueryLength:  lim.MaxQueryLength,
-		MaxOutputLength: lim.MaxOutputLength,
+		Logger:         logger,
+		Runner:         runner,
+		Preparer:       preparer,
+		TagStorage:     tagStorage,
+		RunRepo:        runRepo,
+		Timeout:        config.API.ServerTimeout,
+		CacheDisabled:  config.API.CacheDisabled,
+		MaxQueryLength: lim.MaxQueryLength,
 	}
 }
 
@@ -215,6 +214,7 @@ func initializeRunners(ctx context.Context, config *Config, tagStorage *dockerta
 			rcfg.QuotasPath = r.DockerEngine.QuotasPath
 			rcfg.KeeperConfigPath = r.DockerEngine.KeeperConfigPath
 			rcfg.GC = nil
+			rcfg.MaxOutputBytes = config.Limits.MaxOutputLength
 
 			if config.Settings.DefaultFormat != nil {
 				rcfg.DefaultOutputFormat = *config.Settings.DefaultFormat

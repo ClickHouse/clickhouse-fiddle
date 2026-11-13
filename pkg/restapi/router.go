@@ -26,8 +26,7 @@ type RouterOpts struct {
 	Timeout       time.Duration
 	CacheDisabled bool
 
-	MaxQueryLength  uint64
-	MaxOutputLength uint64
+	MaxQueryLength uint64
 }
 
 func NewRouter(opts RouterOpts) http.Handler {
@@ -59,7 +58,7 @@ func NewRouter(opts RouterOpts) http.Handler {
 	}))
 
 	r.Route("/api", func(r chi.Router) {
-		newQueryHandler(opts.Runner, opts.RunRepo, opts.TagStorage, opts.MaxQueryLength, opts.MaxOutputLength).handle(r)
+		newQueryHandler(opts.Runner, opts.RunRepo, opts.TagStorage, opts.MaxQueryLength).handle(r)
 		newImageTagHandler(opts.TagStorage).handle(r)
 		newImageBuildHandler(opts.Preparer, opts.TagStorage).handle(r)
 	})

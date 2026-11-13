@@ -4,164 +4,147 @@ import (
 	"bytes"
 	"compress/gzip"
 	"io"
-	"unicode/utf8"
 
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/pkg/errors"
 )
 
-const (
-	// Outputs whose combined size stays below this are stored as plain attributes.
-	compressThreshold = 32 << 10
+// maxItemSize is the largest DynamoDB item this package writes. The service limit is
+// 400 KB (409,600 bytes); the rest is a margin for the size estimate.
+const maxItemSize = 400_000
 
-	// Combined budget for the stored output attributes, derived from the 400 KB
-	// DynamoDB item limit with slack for the query input and the other attributes.
-	storedOutputBudget = 256 << 10
-
-	// Step at which an over-budget output is shortened while looking for the longest
-	// prefix that fits. Smaller steps waste less of the budget but cost more passes.
-	truncationChunk = 16 << 10
-
-	// Reserved out of the budget for gzip framing (header, trailer, block headers)
-	// when estimating how much of an output fits.
-	truncationReserve = 256
-
-	truncationMarker = "\n... (output truncated for storage)"
-)
-
-// prepareForStorage returns the run shaped to fit the DynamoDB item size limit:
-// large outputs are stored gzipped, and truncated first if compression alone is
-// not enough. The given run is not modified.
+// prepareForStorage returns the run in its storage shape: the output is stored once, as
+// gzipped exact bytes in OutputGz. The plain Output and RawOutput attributes are not
+// written. The given run is not modified.
 func prepareForStorage(run *Run) *Run {
-	if len(run.Output)+len(run.RawOutput) < compressThreshold {
-		return run
-	}
-
-	output := run.Output
-	rawOutput := run.RawOutput
-
-	// A byte-identical RawOutput is not stored: readers fall back to Output bytes.
-	if string(rawOutput) == output {
-		rawOutput = nil
-	}
-
-	outputGz := gzipBytes([]byte(output))
-
-	var rawOutputGz []byte
-	if len(rawOutput) > 0 {
-		rawOutputGz = gzipBytes(rawOutput)
-	}
-
-	if len(outputGz)+len(rawOutputGz) > storedOutputBudget {
-		// Incompressible output: keep the longest prefix of each field that fits.
-		// Only a distinct RawOutput shares the budget; the common case gets all of it.
-		fieldBudget := storedOutputBudget
-		if len(rawOutput) > 0 {
-			fieldBudget /= 2
-		}
-
-		if len(outputGz) > fieldBudget {
-			_, outputGz = compressPrefix([]byte(output), []byte(truncationMarker), fieldBudget)
-		}
-
-		if len(rawOutputGz) > fieldBudget {
-			var kept int
-			kept, rawOutputGz = compressPrefix(rawOutput, nil, fieldBudget)
-			rawOutput = rawOutput[:kept]
-		}
-	}
-
 	stored := *run
 	stored.Output = ""
-	stored.OutputGz = outputGz
 	stored.RawOutput = nil
-	if len(rawOutput) > 0 {
-		stored.RawOutputGz = rawOutputGz
+	stored.RawOutputGz = nil
+
+	raw := run.RawOutput
+	if raw == nil {
+		raw = []byte(run.Output)
+	}
+	if len(raw) > 0 {
+		stored.OutputGz = gzipBytes(raw)
 	}
 
 	return &stored
 }
 
-// restoreFromStorage inflates the gzipped output attributes back into their plain
-// counterparts. Runs written before compression was introduced are returned as is.
+// dropOutput returns the stored shape of a run whose output does not fit the item size
+// limit: everything but the output is kept, and OutputDropped marks the loss.
+func dropOutput(stored *Run) *Run {
+	dropped := *stored
+	dropped.OutputGz = nil
+	dropped.OutputDropped = true
+
+	return &dropped
+}
+
+// restoreFromStorage fills Output and RawOutput from whichever attributes the stored
+// record has. Records come in several shapes, from oldest to newest:
+//   - Output only (text): RawOutput stays nil, readers fall back to the Output bytes.
+//   - Output and RawOutput (plain text and exact bytes): returned as is.
+//   - OutputGz, optionally RawOutputGz (gzipped by an intermediate version): inflated.
+//   - OutputGz only, or OutputDropped with no output at all: the current shape.
 func restoreFromStorage(run *Run) error {
 	if len(run.OutputGz) > 0 {
-		output, err := gunzipBytes(run.OutputGz)
+		raw, err := gunzipBytes(run.OutputGz)
 		if err != nil {
 			return errors.Wrap(err, "failed to decompress output")
 		}
 
-		run.Output = string(output)
+		run.Output = string(raw)
+		run.RawOutput = raw
 		run.OutputGz = nil
 	}
 
 	if len(run.RawOutputGz) > 0 {
-		rawOutput, err := gunzipBytes(run.RawOutputGz)
+		raw, err := gunzipBytes(run.RawOutputGz)
 		if err != nil {
 			return errors.Wrap(err, "failed to decompress raw output")
 		}
 
-		run.RawOutput = rawOutput
+		run.RawOutput = raw
 		run.RawOutputGz = nil
 	}
 
 	return nil
 }
 
-// compressPrefix gzips the longest prefix of data, followed by suffix, whose gzip
-// form fits into budget bytes. It returns the prefix length and the gzip form.
-// The prefix is cut at a rune boundary, so a truncated string stays valid UTF-8.
-func compressPrefix(data, suffix []byte, budget int) (kept int, gz []byte) {
-	kept = estimatePrefixLength(data, budget-len(suffix))
+// itemSize estimates the size DynamoDB charges for an item, following the documented
+// rules: the UTF-8 length of each attribute name plus the size of its value.
+func itemSize(item map[string]types.AttributeValue) int {
+	size := 0
+	for name, value := range item {
+		size += len(name) + attributeSize(value)
+	}
 
-	for {
-		kept = alignToRuneStart(data, kept)
+	return size
+}
 
-		gz = gzipBytes(data[:kept], suffix)
-		if len(gz) <= budget || kept == 0 {
-			return kept, gz
+func attributeSize(value types.AttributeValue) int {
+	const (
+		nestedOverhead = 3 // Charged for each list or map.
+		scalarSize     = 1 // Booleans and nulls.
+	)
+
+	switch v := value.(type) {
+	case *types.AttributeValueMemberS:
+		return len(v.Value)
+	case *types.AttributeValueMemberB:
+		return len(v.Value)
+	case *types.AttributeValueMemberN:
+		return numberSize(v.Value)
+	case *types.AttributeValueMemberBOOL, *types.AttributeValueMemberNULL:
+		return scalarSize
+	case *types.AttributeValueMemberM:
+		return nestedOverhead + itemSize(v.Value)
+	case *types.AttributeValueMemberL:
+		size := nestedOverhead
+		for _, element := range v.Value {
+			size += attributeSize(element)
 		}
 
-		// The estimate was optimistic by whatever deflate still buffered: step back.
-		kept -= min(truncationChunk, kept)
+		return size
+	case *types.AttributeValueMemberSS:
+		size := 0
+		for _, s := range v.Value {
+			size += len(s)
+		}
+
+		return size
+	case *types.AttributeValueMemberNS:
+		size := 0
+		for _, n := range v.Value {
+			size += numberSize(n)
+		}
+
+		return size
+	case *types.AttributeValueMemberBS:
+		size := 0
+		for _, b := range v.Value {
+			size += len(b)
+		}
+
+		return size
+	default:
+		return 0
 	}
 }
 
-// estimatePrefixLength feeds data to gzip chunk by chunk and stops before the chunk
-// that could exceed budget if it did not compress at all. Flush does not push out
-// everything deflate buffers, so the result is an estimate that the caller verifies.
-func estimatePrefixLength(data []byte, budget int) int {
-	var buf bytes.Buffer
-	w := gzip.NewWriter(&buf)
-
-	kept := 0
-	for kept < len(data) && buf.Len()+truncationChunk+truncationReserve <= budget {
-		end := min(kept+truncationChunk, len(data))
-		_, _ = w.Write(data[kept:end])
-		_ = w.Flush()
-		kept = end
-	}
-
-	return kept
+// numberSize follows the DynamoDB rule: two significant digits per byte, plus one byte.
+func numberSize(digits string) int {
+	return (len(digits)+1)/2 + 1
 }
 
-// alignToRuneStart moves the cut left, by at most the tail of one rune, so that it
-// does not split a UTF-8 sequence. Binary data that has no rune starts loses at
-// most utf8.UTFMax-1 bytes.
-func alignToRuneStart(data []byte, cut int) int {
-	for back := 0; back < utf8.UTFMax-1 && cut > 0 && cut < len(data) && !utf8.RuneStart(data[cut]); back++ {
-		cut--
-	}
-
-	return cut
-}
-
-func gzipBytes(parts ...[]byte) []byte {
+func gzipBytes(data []byte) []byte {
 	var buf bytes.Buffer
 
 	w := gzip.NewWriter(&buf)
-	for _, part := range parts {
-		_, _ = w.Write(part)
-	}
+	_, _ = w.Write(data)
 	_ = w.Close()
 
 	return buf.Bytes()

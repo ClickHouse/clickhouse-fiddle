@@ -15,7 +15,7 @@ type TagStorage interface {
 }
 
 type QueryRunner interface {
-	RunQuery(ctx context.Context, run *queryrun.Run) (string, error)
+	RunQuery(ctx context.Context, run *queryrun.Run) (qrunner.QueryOutput, error)
 }
 
 // ImagePreparer triggers and reports on local image builds for non-release build types.

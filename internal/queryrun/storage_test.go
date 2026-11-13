@@ -1,162 +1,152 @@
 package queryrun
 
 import (
-	"bytes"
+	"crypto/rand"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/stretchr/testify/require"
 )
 
-// pseudoRandomBytes returns deterministic ASCII noise that gzip cannot compress well.
-func pseudoRandomBytes(n int) []byte {
-	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-	data := make([]byte, n)
-	state := uint64(42)
-	for i := range data {
-		state = state*6364136223846793005 + 1442695040888963407
-		data[i] = alphabet[state>>58]
-	}
-
-	return data
-}
-
-func TestPrepareForStorageSmallRunIsUntouched(t *testing.T) {
-	run := &Run{ID: "id", Output: "1\n", RawOutput: []byte("1\n")}
+func TestPrepareForStorageWritesOneGzippedCopy(t *testing.T) {
+	raw := []byte{0xff, '\\', '0', '\n'} // Not valid UTF-8: only the bytes are exact.
+	run := &Run{ID: "id", Input: "SELECT unhex('FF00')", Output: string(raw), RawOutput: raw}
 
 	stored := prepareForStorage(run)
 
-	require.Same(t, run, stored)
-	require.Empty(t, stored.OutputGz)
-	require.Empty(t, stored.RawOutputGz)
-}
-
-func TestPrepareForStorageCompressesLargeOutput(t *testing.T) {
-	// Mimics Pretty-formatted output: large, heavily padded, well compressible.
-	output := strings.Repeat("│ SHOW DATABASES      │ []        │ DATABASE │ SHOW │\n", 10000)
-	run := &Run{ID: "id", Output: output, RawOutput: []byte(output)}
-
-	stored := prepareForStorage(run)
-
-	require.NotSame(t, run, stored)
 	require.Empty(t, stored.Output)
 	require.Empty(t, stored.RawOutput)
-	// The byte-identical RawOutput is deduplicated instead of being compressed twice.
 	require.Empty(t, stored.RawOutputGz)
-	require.LessOrEqual(t, len(stored.OutputGz), storedOutputBudget)
+	require.NotEmpty(t, stored.OutputGz)
+	require.False(t, stored.OutputDropped)
+
+	item, err := attributevalue.MarshalMap(stored)
+	require.NoError(t, err)
+	_, hasOutput := item["Output"]
+	require.False(t, hasOutput, "the plain text copy must not be written")
+	_, hasRaw := item["RawOutput"]
+	require.False(t, hasRaw, "the plain bytes copy must not be written")
+	require.IsType(t, &types.AttributeValueMemberB{}, item["OutputGz"])
 
 	require.NoError(t, restoreFromStorage(stored))
-	require.Equal(t, output, stored.Output)
-	require.Empty(t, stored.RawOutput)
+	require.Equal(t, raw, stored.RawOutput)
+	require.Equal(t, string(raw), stored.Output)
 	require.Empty(t, stored.OutputGz)
 
 	// The original run is left intact.
-	require.Equal(t, output, run.Output)
-	require.Equal(t, []byte(output), run.RawOutput)
+	require.Equal(t, string(raw), run.Output)
+	require.Equal(t, raw, run.RawOutput)
 	require.Empty(t, run.OutputGz)
 }
 
-func TestPrepareForStorageKeepsDistinctRawOutput(t *testing.T) {
-	output := strings.Repeat("│ SHOW DATABASES │\n", 10000)
-	raw := pseudoRandomBytes(64 << 10)
-	run := &Run{ID: "id", Output: output, RawOutput: raw}
+func TestPrepareForStorageUsesOutputWhenRawOutputIsAbsent(t *testing.T) {
+	run := &Run{ID: "id", Output: "1\n"}
 
 	stored := prepareForStorage(run)
-
-	require.NotEmpty(t, stored.RawOutputGz)
-
-	require.NoError(t, restoreFromStorage(stored))
-	require.Equal(t, output, stored.Output)
-	require.Equal(t, raw, stored.RawOutput)
-}
-
-func TestPrepareForStorageTruncatesIncompressibleOutput(t *testing.T) {
-	noise := pseudoRandomBytes(400 << 10)
-	run := &Run{ID: "id", Output: string(noise), RawOutput: noise}
-
-	stored := prepareForStorage(run)
-
-	require.Empty(t, stored.RawOutputGz)
-	require.LessOrEqual(t, len(stored.OutputGz), storedOutputBudget)
-
-	require.NoError(t, restoreFromStorage(stored))
-	require.True(t, strings.HasSuffix(stored.Output, truncationMarker))
-	require.True(t, utf8.ValidString(stored.Output))
-	require.Empty(t, stored.RawOutput)
-
-	// The kept prefix is the original data and it uses the budget: the noise does not
-	// compress at all, so the cut lands within two chunks of the budget.
-	kept := strings.TrimSuffix(stored.Output, truncationMarker)
-	require.Equal(t, string(noise[:len(kept)]), kept)
-	require.Greater(t, len(kept), storedOutputBudget-2*truncationChunk)
-}
-
-func TestPrepareForStorageKeepsMoreOfLargerOutput(t *testing.T) {
-	prev := 0
-	for _, size := range []int{128 << 10, 256 << 10, 512 << 10, 1 << 20} {
-		noise := pseudoRandomBytes(size)
-		stored := prepareForStorage(&Run{ID: "id", Output: string(noise), RawOutput: noise})
-
-		require.LessOrEqual(t, len(stored.OutputGz), storedOutputBudget)
-		require.NoError(t, restoreFromStorage(stored))
-		// A larger output must never be stored shorter than a smaller one.
-		require.GreaterOrEqual(t, len(stored.Output), prev, "size %d", size)
-		prev = len(stored.Output)
-	}
-}
-
-func TestPrepareForStorageMarksOnlyTruncatedFields(t *testing.T) {
-	// Only the distinct RawOutput exceeds the budget; Output is tiny and must stay as is.
-	raw := pseudoRandomBytes(400 << 10)
-	run := &Run{ID: "id", Output: "1\n", RawOutput: raw}
-
-	stored := prepareForStorage(run)
-
-	require.LessOrEqual(t, len(stored.OutputGz)+len(stored.RawOutputGz), storedOutputBudget)
+	require.NotEmpty(t, stored.OutputGz)
 
 	require.NoError(t, restoreFromStorage(stored))
 	require.Equal(t, "1\n", stored.Output)
-	require.Less(t, len(stored.RawOutput), len(raw))
-	require.Equal(t, raw[:len(stored.RawOutput)], stored.RawOutput)
-	// RawOutput gets half of the budget and fills it to within two chunks.
-	require.Greater(t, len(stored.RawOutput), storedOutputBudget/2-2*truncationChunk)
+	require.Equal(t, []byte("1\n"), stored.RawOutput)
 }
 
-func TestPrepareForStorageWithoutRawOutput(t *testing.T) {
-	run := &Run{ID: "id", Output: strings.Repeat("x", compressThreshold)}
+func TestPrepareForStorageEmptyOutputHasNoOutputAttribute(t *testing.T) {
+	stored := prepareForStorage(&Run{ID: "id"})
 
-	stored := prepareForStorage(run)
-
-	require.NotEmpty(t, stored.OutputGz)
-	require.Empty(t, stored.RawOutputGz)
-
+	require.Empty(t, stored.OutputGz)
 	require.NoError(t, restoreFromStorage(stored))
-	require.Equal(t, run.Output, stored.Output)
-	require.Empty(t, stored.RawOutput)
+	require.Empty(t, stored.Output)
 }
 
-func TestAlignToRuneStartKeepsUTF8Valid(t *testing.T) {
-	s := []byte(strings.Repeat("│", 100)) // 3 bytes per rune
+func TestDropOutputKeepsEverythingElse(t *testing.T) {
+	run := &Run{ID: "id", Input: "SELECT 1", Version: "latest", Output: "1\n", OutputTruncated: true}
 
-	for limit := 1; limit < 10; limit++ {
-		cut := alignToRuneStart(s, limit)
-		require.LessOrEqual(t, cut, limit)
-		require.True(t, utf8.Valid(s[:cut]))
+	dropped := dropOutput(prepareForStorage(run))
+
+	require.True(t, dropped.OutputDropped)
+	require.True(t, dropped.OutputTruncated)
+	require.Empty(t, dropped.OutputGz)
+	require.Equal(t, "SELECT 1", dropped.Input)
+	require.Equal(t, "latest", dropped.Version)
+
+	require.NoError(t, restoreFromStorage(dropped))
+	require.Empty(t, dropped.Output)
+	require.Empty(t, dropped.RawOutput)
+}
+
+// Records written by earlier versions must still be readable.
+func TestRestoreFromStorageLegacyShapes(t *testing.T) {
+	t.Run("text only, before RawOutput existed", func(t *testing.T) {
+		run := &Run{ID: "id", Output: "plain"}
+
+		require.NoError(t, restoreFromStorage(run))
+		require.Equal(t, "plain", run.Output)
+		require.Nil(t, run.RawOutput, "readers fall back to the Output bytes")
+	})
+
+	t.Run("text and exact bytes", func(t *testing.T) {
+		run := &Run{ID: "id", Output: "plain", RawOutput: []byte("plain")}
+
+		require.NoError(t, restoreFromStorage(run))
+		require.Equal(t, "plain", run.Output)
+		require.Equal(t, []byte("plain"), run.RawOutput)
+	})
+
+	t.Run("gzipped text with a distinct gzipped raw copy", func(t *testing.T) {
+		run := &Run{ID: "id", OutputGz: gzipBytes([]byte("text")), RawOutputGz: gzipBytes([]byte{0xff})}
+
+		require.NoError(t, restoreFromStorage(run))
+		require.Equal(t, "text", run.Output)
+		require.Equal(t, []byte{0xff}, run.RawOutput)
+		require.Empty(t, run.OutputGz)
+		require.Empty(t, run.RawOutputGz)
+	})
+
+	t.Run("corrupted gzip is an error", func(t *testing.T) {
+		run := &Run{ID: "id", OutputGz: []byte("not gzip")}
+
+		require.Error(t, restoreFromStorage(run))
+	})
+}
+
+func TestItemSizeFollowsDynamoDBRules(t *testing.T) {
+	item := map[string]types.AttributeValue{
+		"Id":    &types.AttributeValueMemberS{Value: "abc"},                                                                           // 2 + 3
+		"Gz":    &types.AttributeValueMemberB{Value: []byte{1, 2, 3, 4}},                                                              // 2 + 4
+		"N":     &types.AttributeValueMemberN{Value: "12345"},                                                                         // 1 + (3 + 1)
+		"Flag":  &types.AttributeValueMemberBOOL{Value: true},                                                                         // 4 + 1
+		"Null":  &types.AttributeValueMemberNULL{Value: true},                                                                         // 4 + 1
+		"M":     &types.AttributeValueMemberM{Value: map[string]types.AttributeValue{"k": &types.AttributeValueMemberS{Value: "vv"}}}, // 1 + 3 + (1 + 2)
+		"L":     &types.AttributeValueMemberL{Value: []types.AttributeValue{&types.AttributeValueMemberS{Value: "x"}}},                // 1 + 3 + 1
+		"SS":    &types.AttributeValueMemberSS{Value: []string{"a", "bc"}},                                                            // 2 + 3
+		"NS":    &types.AttributeValueMemberNS{Value: []string{"1", "22"}},                                                            // 2 + (2 + 2)
+		"BS":    &types.AttributeValueMemberBS{Value: [][]byte{{1}, {2, 3}}},                                                          // 2 + 3
+		"Other": nil,                                                                                                                  // 5 + 0
 	}
 
-	// Binary data without rune starts loses at most three bytes (the longest rune tail).
-	cont := bytes.Repeat([]byte{0x80}, 100)
-	require.Equal(t, 47, alignToRuneStart(cont, 50))
-	// A cut at the end does not move.
-	require.Equal(t, len(s), alignToRuneStart(s, len(s)))
+	require.Equal(t, 5+6+5+5+5+7+5+5+6+5+5, itemSize(item))
 }
 
-func TestRestoreFromStoragePlainRunIsUntouched(t *testing.T) {
-	run := &Run{ID: "id", Output: "plain", RawOutput: []byte("plain")}
+func TestItemSizeOfARunIsCloseToItsPayload(t *testing.T) {
+	output := strings.Repeat("x", 100_000)
+	run := &Run{ID: "id", Input: "SELECT 1", Output: output, RawOutput: []byte(output)}
 
-	require.NoError(t, restoreFromStorage(run))
-	require.Equal(t, "plain", run.Output)
-	require.Equal(t, []byte("plain"), run.RawOutput)
+	item, err := attributevalue.MarshalMap(prepareForStorage(run))
+	require.NoError(t, err)
+
+	// 100 KB of one letter compresses to a few hundred bytes; the rest is metadata.
+	require.Less(t, itemSize(item), 2_000)
+
+	// Bytes that do not compress dominate the size one-to-one.
+	noise := make([]byte, 300_000)
+	_, err = rand.Read(noise)
+	require.NoError(t, err)
+	run = &Run{ID: "id", Input: "SELECT 1", Output: string(noise), RawOutput: noise}
+
+	item, err = attributevalue.MarshalMap(prepareForStorage(run))
+	require.NoError(t, err)
+	require.Greater(t, itemSize(item), 250_000)
+	require.Less(t, itemSize(item), 310_000)
 }

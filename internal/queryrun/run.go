@@ -15,15 +15,23 @@ type Run struct {
 	// BuildType is the ClickHouse build kind (release/debug/asan/...). Empty means release.
 	BuildType string `dynamodbav:"BuildType"`
 	Input     string `dynamodbav:"Input"`
-	// Output remains for API and stored-run compatibility. RawOutput preserves the
-	// exact byte sequence for clients that need to inspect non-UTF-8 output.
-	Output    string `dynamodbav:"Output"`
+	// Output is the query output as text; RawOutput is the same output as the exact
+	// bytes, for clients that inspect non-UTF-8 output. In memory both are always set.
+	// In storage only OutputGz is written; the plain attributes are read for records
+	// written before compression (see restoreFromStorage).
+	Output    string `dynamodbav:"Output,omitempty"`
 	RawOutput []byte `dynamodbav:"RawOutput,omitempty"`
 
-	// Gzipped replacements of Output/RawOutput, set when the plain values would not
-	// fit the DynamoDB item size limit. See prepareForStorage.
+	// OutputGz is the gzipped exact output bytes, the only form written to storage.
+	// RawOutputGz exists in a few records written by an intermediate version.
 	OutputGz    []byte `dynamodbav:"OutputGz,omitempty"`
 	RawOutputGz []byte `dynamodbav:"RawOutputGz,omitempty"`
+
+	// OutputTruncated is set when the runner stopped reading the output at its cap.
+	OutputTruncated bool `dynamodbav:"OutputTruncated,omitempty"`
+	// OutputDropped is set when the output was not stored because the item would exceed
+	// the DynamoDB size limit. Such a run has to be executed again to see its output.
+	OutputDropped bool `dynamodbav:"OutputDropped,omitempty"`
 
 	Database string                  `dynamodbav:"Database"`
 	Settings runsettings.RunSettings `dynamodbav:"Settings"`

@@ -141,11 +141,6 @@ paths:
                     error:
                       message: query length (10000) cannot exceed 8192
                       code: 400
-                outputTooLong:
-                  value:
-                    error:
-                      message: output length (10000) cannot exceed 8192
-                      code: 400
                 unknownDatabase:
                   value:
                     error:
@@ -377,6 +372,17 @@ components:
               type: string
               format: byte
               description: Exact query output bytes, present when include_raw_output is true
+            output_truncated:
+              type: boolean
+              description: >-
+                True when the server stopped reading the output at its size cap. The output
+                fields hold the part that was read.
+            output_dropped:
+              type: boolean
+              description: >-
+                True when the output was not stored because the run would exceed the storage
+                item size limit. This response still carries the output; GET /runs/{id} will
+                return the run without it.
             time_elapsed:
               type: string
               description: Time taken to execute the query
@@ -425,6 +431,14 @@ components:
               type: string
               format: byte
               description: Exact query output bytes, present when include_raw_output is true
+            output_truncated:
+              type: boolean
+              description: True when the server cut the output at its size cap during the run.
+            output_dropped:
+              type: boolean
+              description: >-
+                True when the output was not stored because it did not fit the storage item
+                size limit. output is empty; run the query again to see the result.
           required:
             - query_run_id
             - version

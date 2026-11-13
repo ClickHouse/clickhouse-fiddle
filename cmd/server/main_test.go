@@ -7,12 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewRouterOptsUsesIndependentLimits(t *testing.T) {
+func TestNewRouterOptsUsesTheQueryLimit(t *testing.T) {
 	opts := newRouterOpts(
 		&Config{
 			Limits: Limits{
-				MaxQueryLength:  3,
-				MaxOutputLength: 5,
+				MaxQueryLength: 3,
 			},
 		},
 		zerolog.Nop(),
@@ -23,5 +22,4 @@ func TestNewRouterOptsUsesIndependentLimits(t *testing.T) {
 	)
 
 	require.Equal(t, uint64(3), opts.MaxQueryLength)
-	require.Equal(t, uint64(5), opts.MaxOutputLength)
 }

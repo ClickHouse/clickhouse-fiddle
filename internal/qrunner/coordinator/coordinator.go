@@ -173,12 +173,12 @@ func (c *Coordinator) Stop(shutdownCtx context.Context) error {
 }
 
 // RunQuery proxies queries to one of the underlying runners.
-func (c *Coordinator) RunQuery(ctx context.Context, run *queryrun.Run) (output string, err error) {
+func (c *Coordinator) RunQuery(ctx context.Context, run *queryrun.Run) (output qrunner.QueryOutput, err error) {
 	processed := c.balancer.processJob(func(r *Runner) {
 		output, err = r.underlying.RunQuery(ctx, run)
 	})
 	if !processed {
-		return "", qrunner.ErrNoAvailableRunners
+		return qrunner.QueryOutput{}, qrunner.ErrNoAvailableRunners
 	}
 
 	return output, err

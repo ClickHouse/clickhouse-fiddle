@@ -66,14 +66,17 @@ api:
   # Default: false.
   cache_disabled: false
 
-# You can set some limits to prevent budget waste on storage and etc.
+# Safety caps. They bound the memory one request can take; they do not decide what is stored.
 limits:
-  # If the length of a user's query exceeds this limit, the request is aborted.
+  # If the length of a user's query exceeds this limit, the request is rejected with 400.
+  # The query is passed to clickhouse-client over stdin, so there is no other bound on its size.
   # Default: 2500.
   max_query_length: 2500
 
-  # If the length of a user's query execution result exceeds this limit, the request is aborted and
-  # output is not saved to the storage.
+  # Maximum number of output bytes (stdout and stderr together) read from a query. Reading
+  # stops at the cap, the query still succeeds, and the response marks the output as truncated.
+  # Whether the output is stored for the share link depends only on the DynamoDB item size
+  # (400 KB after gzip): an output that does not fit is dropped and the run is marked.
   # Default: 25000.
   max_output_length: 25000
 

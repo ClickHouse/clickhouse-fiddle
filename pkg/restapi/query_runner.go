@@ -29,17 +29,15 @@ type queryHandler struct {
 
 	tagStorage TagStorage
 
-	maxQueryLength  uint64
-	maxOutputLength uint64
+	maxQueryLength uint64
 }
 
-func newQueryHandler(r QueryRunner, runRepo queryrun.Repository, storage TagStorage, maxQueryLength, maxOutputLength uint64) *queryHandler {
+func newQueryHandler(r QueryRunner, runRepo queryrun.Repository, storage TagStorage, maxQueryLength uint64) *queryHandler {
 	return &queryHandler{
-		r:               r,
-		runRepo:         runRepo,
-		tagStorage:      storage,
-		maxQueryLength:  maxQueryLength,
-		maxOutputLength: maxOutputLength,
+		r:              r,
+		runRepo:        runRepo,
+		tagStorage:     storage,
+		maxQueryLength: maxQueryLength,
 	}
 }
 
@@ -70,7 +68,13 @@ type RunQueryOutput struct {
 	QueryRunID   string `json:"query_run_id"`
 	Output       string `json:"output"`
 	OutputBase64 string `json:"output_base64,omitempty"`
-	TimeElapsed  string `json:"time_elapsed"`
+	// OutputTruncated is true when the server stopped reading the output at its cap
+	// (the max_output_length limit); Output holds the part that was read.
+	OutputTruncated bool `json:"output_truncated,omitempty"`
+	// OutputDropped is true when the output was not stored because the run would not
+	// fit a DynamoDB item. The response still carries the output; GET /runs/{id} will not.
+	OutputDropped bool   `json:"output_dropped,omitempty"`
+	TimeElapsed   string `json:"time_elapsed"`
 }
 
 func convertSettings(req *RunQueryInput) (runsettings.RunSettings, error) {
@@ -138,7 +142,7 @@ func (h *queryHandler) runQuery(w http.ResponseWriter, r *http.Request) {
 	run := queryrun.New(req.Query, req.Database, req.Version, bt.String(), runSettings)
 
 	startedAt := time.Now()
-	output, err := h.r.RunQuery(r.Context(), run)
+	result, err := h.r.RunQuery(r.Context(), run)
 	if err != nil {
 		zlog.Error().Err(err).Interface("request", req).Msg("query run failed")
 
@@ -158,37 +162,37 @@ func (h *queryHandler) runQuery(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	if uint64(len(output)) > h.maxOutputLength {
-		msg := fmt.Sprintf("output length (%d) cannot exceed %d", len(output), h.maxOutputLength)
-		writeError(w, msg, http.StatusBadRequest)
-
-		return
-	}
 
 	timeElapsed := time.Since(startedAt)
-	run.Output = output
-	run.RawOutput = []byte(output)
+	run.Output = result.Output
+	run.RawOutput = []byte(result.Output)
+	run.OutputTruncated = result.Truncated
 	run.ExecutionTime = timeElapsed
 
+	// Create sets run.OutputDropped when the output did not fit the storage.
 	err = h.runRepo.Create(run)
 	if err != nil {
-		zlog.Error().Err(err).Interface("model", run).Msg("a run cannot be saved")
+		zlog.Error().Err(err).Str("id", run.ID).Int("output_len", len(run.Output)).Msg("a run cannot be saved")
 		writeError(w, "internal error", http.StatusInternalServerError)
 
 		return
 	}
 
-	zlog.Info().Str("id", run.ID).Dur("elapsed", timeElapsed).Msg("saved a new run")
+	zlog.Info().Str("id", run.ID).Dur("elapsed", timeElapsed).
+		Bool("output_truncated", run.OutputTruncated).Bool("output_dropped", run.OutputDropped).
+		Msg("saved a new run")
 
-	result := RunQueryOutput{
-		QueryRunID:  run.ID,
-		Output:      run.Output,
-		TimeElapsed: timeElapsed.Round(time.Millisecond).String(),
+	response := RunQueryOutput{
+		QueryRunID:      run.ID,
+		Output:          run.Output,
+		OutputTruncated: run.OutputTruncated,
+		OutputDropped:   run.OutputDropped,
+		TimeElapsed:     timeElapsed.Round(time.Millisecond).String(),
 	}
 	if req.IncludeRawOutput {
-		result.OutputBase64 = encodeOutput(run.RawOutput)
+		response.OutputBase64 = encodeOutput(run.RawOutput)
 	}
-	writeResult(w, result)
+	writeResult(w, response)
 }
 
 type GetQueryRunInput struct {
@@ -204,6 +208,11 @@ type GetQueryRunOutput struct {
 	Input        string                  `json:"input"`
 	Output       string                  `json:"output"`
 	OutputBase64 string                  `json:"output_base64,omitempty"`
+	// OutputTruncated is true when the server cut the output at its cap during the run.
+	OutputTruncated bool `json:"output_truncated,omitempty"`
+	// OutputDropped is true when the output was not stored because it did not fit a
+	// DynamoDB item. Output is empty; the query has to be run again to see it.
+	OutputDropped bool `json:"output_dropped,omitempty"`
 }
 
 func encodeOutput(output []byte) string {
@@ -245,13 +254,15 @@ func (h *queryHandler) getQueryRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := GetQueryRunOutput{
-		QueryRunID: run.ID,
-		Database:   run.Database,
-		Version:    run.Version,
-		BuildType:  run.BuildType,
-		Settings:   run.Settings,
-		Input:      run.Input,
-		Output:     run.Output,
+		QueryRunID:      run.ID,
+		Database:        run.Database,
+		Version:         run.Version,
+		BuildType:       run.BuildType,
+		Settings:        run.Settings,
+		Input:           run.Input,
+		Output:          run.Output,
+		OutputTruncated: run.OutputTruncated,
+		OutputDropped:   run.OutputDropped,
 	}
 	if includeRawOutput(r) {
 		result.OutputBase64 = encodeOutput(rawOutput(run))
